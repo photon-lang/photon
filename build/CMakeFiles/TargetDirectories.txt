@@ -1,9 +1,0 @@
-/Users/samuel/CLionProjects/photonc/build/CMakeFiles/photonc.dir
-/Users/samuel/CLionProjects/photonc/build/CMakeFiles/edit_cache.dir
-/Users/samuel/CLionProjects/photonc/build/CMakeFiles/rebuild_cache.dir
-/Users/samuel/CLionProjects/photonc/build/compiler/CMakeFiles/edit_cache.dir
-/Users/samuel/CLionProjects/photonc/build/compiler/CMakeFiles/rebuild_cache.dir
-/Users/samuel/CLionProjects/photonc/build/compiler/common/CMakeFiles/edit_cache.dir
-/Users/samuel/CLionProjects/photonc/build/compiler/common/CMakeFiles/rebuild_cache.dir
-/Users/samuel/CLionProjects/photonc/build/compiler/memory/CMakeFiles/edit_cache.dir
-/Users/samuel/CLionProjects/photonc/build/compiler/memory/CMakeFiles/rebuild_cache.dir
