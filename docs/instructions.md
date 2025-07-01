@@ -2,7 +2,7 @@
 
 ## 🎯 Development Directive
 
-You are tasked with implementing the Photon programming language compiler. Your code must be **production-grade**, **architecturally sound**, and **rigorously tested**. No placeholder implementations, no basic solutions—only advanced, robust code that could be deployed immediately. each feature must be on its own branch
+You are tasked with implementing the Photon programming language compiler. Your code must be **production-grade**, **architecturally sound**, and **rigorously tested**. No placeholder implementations, no basic solutions—only advanced, robust code that could be deployed immediately. each feature must be on its own branch, 
 
 ## 🛡️ Core Requirements
 
