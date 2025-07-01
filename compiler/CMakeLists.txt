@@ -7,7 +7,7 @@ add_subdirectory(diagnostics)
 add_subdirectory(source)
 
 # Main compiler executable will be added as components are implemented
-# add_subdirectory(lexer)
+add_subdirectory(lexer)
 # add_subdirectory(parser)
 # add_subdirectory(ast)
 # add_subdirectory(types)
