@@ -4,6 +4,7 @@
 add_subdirectory(common)
 add_subdirectory(memory)
 add_subdirectory(diagnostics)
+add_subdirectory(source)
 
 # Main compiler executable will be added as components are implemented
 # add_subdirectory(lexer)
