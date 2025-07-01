@@ -1,0 +1,84 @@
+# Build directories
+build/
+cmake-build-*/
+.cmake/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+photonc
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Testing
+Testing/
+*.gcno
+*.gcda
+*.gcov
+coverage.info
+coverage/
+
+# Benchmarks
+benchmark_results/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Documentation artifacts (except source)
+docs/_build/
+docs/html/
+docs/latex/
+
+# AI assistance files (keep private)
+CLAUDE.md
+.claude_settings
+
+# Temporary files
+*.tmp
+*.temp
+*.log
