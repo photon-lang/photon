@@ -86,4 +86,4 @@ add_subdirectory(compiler)
 
 # Temporary main executable for testing
 add_executable(photonc main.cpp)
-target_link_libraries(photonc PRIVATE photon::common photon::memory photon::diagnostics)
+target_link_libraries(photonc PRIVATE photon::common photon::memory photon::diagnostics photon::source)

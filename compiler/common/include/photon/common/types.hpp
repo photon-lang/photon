@@ -141,4 +141,25 @@ template<typename T, typename... Args>
     return std::make_shared<T>(std::forward<Args>(args)...);
 }
 
+// Result factory functions
+template<typename T>
+[[nodiscard]] auto Ok(T&& value) -> Result<std::decay_t<T>, std::monostate> {
+    return Result<std::decay_t<T>, std::monostate>(std::forward<T>(value));
+}
+
+template<typename T, typename E>
+[[nodiscard]] auto Ok(T&& value) -> Result<std::decay_t<T>, E> {
+    return Result<std::decay_t<T>, E>(std::forward<T>(value));
+}
+
+template<typename E>
+[[nodiscard]] auto Err(E&& error) -> Result<std::monostate, std::decay_t<E>> {
+    return Result<std::monostate, std::decay_t<E>>(std::forward<E>(error));
+}
+
+template<typename T, typename E>
+[[nodiscard]] auto Err(E&& error) -> Result<T, std::decay_t<E>> {
+    return Result<T, std::decay_t<E>>(std::forward<E>(error));
+}
+
 } // namespace photon
