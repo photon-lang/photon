@@ -84,6 +84,10 @@ endif()
 # Add compiler components
 add_subdirectory(compiler)
 
-# Temporary main executable for testing
+# Main compiler executable
 add_executable(photonc main.cpp)
-target_link_libraries(photonc PRIVATE photon::common photon::memory photon::diagnostics photon::source photon::lexer)
+target_link_libraries(photonc PRIVATE photon::common photon::memory photon::diagnostics photon::source photon::lexer photon::parser)
+
+# AST demo executable
+add_executable(ast_demo ast_demo.cpp)
+target_link_libraries(ast_demo PRIVATE photon::common photon::memory photon::diagnostics photon::parser)
