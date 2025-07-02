@@ -162,4 +162,39 @@ template<typename T, typename E>
     return Result<T, std::decay_t<E>>(std::forward<E>(error));
 }
 
+// Specialization for Result<void, E>
+template<typename E>
+class Result<void, E> {
+private:
+    std::variant<std::monostate, E> data_;
+    
+public:
+    // Constructors
+    Result() : data_(std::monostate{}) {}
+    Result(const E& error) : data_(error) {}
+    Result(E&& error) : data_(std::move(error)) {}
+    
+    [[nodiscard]] bool has_value() const noexcept {
+        return std::holds_alternative<std::monostate>(data_);
+    }
+    
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return has_value();
+    }
+    
+    [[nodiscard]] const E& error() const & {
+        if (has_value()) {
+            throw std::runtime_error("Result contains value");
+        }
+        return std::get<E>(data_);
+    }
+    
+    [[nodiscard]] E& error() & {
+        if (has_value()) {
+            throw std::runtime_error("Result contains value");
+        }
+        return std::get<E>(data_);
+    }
+};
+
 } // namespace photon

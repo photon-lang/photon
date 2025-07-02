@@ -45,6 +45,8 @@ cmake-build-*/
 *.out
 *.app
 photonc
+ast_demo
+test_components
 
 # CMake
 CMakeFiles/
