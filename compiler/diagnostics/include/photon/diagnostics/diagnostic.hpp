@@ -14,7 +14,6 @@
 #include "photon/diagnostics/source_location.hpp"
 #include "photon/memory/arena.hpp"
 #include "photon/common/types.hpp"
-#include <format>
 
 namespace photon::diagnostics {
 
