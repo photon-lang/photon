@@ -75,9 +75,8 @@ private:
     String content_;
     Vec<usize> line_offsets_;  ///< Byte offsets for each line start
     Statistics stats_;
-    bool is_memory_mapped_;
-    std::unique_ptr<u8[]> mapped_memory_;
-    usize mapped_size_;
+    bool is_memory_mapped_ = false;
+    bool has_byte_order_mark_ = false;
 
 public:
     /**
@@ -193,6 +192,17 @@ private:
      * @brief Detects file encoding
      */
     auto detect_encoding() -> Encoding;
+
+    /**
+     * @brief Removes a leading UTF-8 byte order mark from the content
+     * @return True if a byte order mark was present and removed
+     *
+     * The mark is stripped before the line table is built so that column
+     * numbers on the first line are not shifted by three bytes.
+     *
+     * @complexity O(n) in the size of the content
+     */
+    auto strip_byte_order_mark() -> bool;
 };
 
 /**
@@ -364,6 +374,11 @@ public:
      * @param filename Virtual filename for the content
      * @param content Source content
      * @return File ID or error
+     *
+     * @note Filenames are the identity of a loaded file. If @p filename has already
+     *       been loaded, the existing file identifier is returned and @p content is
+     *       ignored, so callers that load several distinct sources must give each one
+     *       a distinct virtual filename.
      */
     [[nodiscard]] auto load_from_string(StringView filename, String content)
         -> Result<FileID, SourceError>;

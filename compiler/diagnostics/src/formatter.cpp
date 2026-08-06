@@ -143,7 +143,8 @@ auto DiagnosticFormatter::format_summary(usize error_count, usize warning_count,
     std::ostringstream output;
     
     if (error_count == 0 && warning_count == 0) {
-        output << ColorFormatter::green("compilation completed successfully");
+        String success_str = "compilation completed successfully";
+        output << (supports_color() ? ColorFormatter::green(success_str) : success_str);
         if (note_count > 0) {
             output << " (" << note_count << " note" << (note_count != 1 ? "s" : "") << ")";
         }
@@ -277,14 +278,20 @@ auto DiagnosticFormatter::format_source_context(const SourceLocation& location) 
         // Add column marker for the error line
         if (current_line == location.line() && options_.show_column_markers) {
             if (options_.show_line_numbers) {
-                String spaces(line_number_width + 3, ' ');
+                String spaces(line_number_width + 2, ' ');
                 if (supports_color()) {
                     spaces = ColorFormatter::dim(spaces);
                 }
                 output << spaces << "| ";
             }
             
-            output << format_column_marker(location.column()) << "\n";
+            u32 marker_column = location.column();
+            auto display_length = static_cast<u32>(display_line.length());
+            if (display_length > 0 && marker_column > display_length) {
+                marker_column = display_length;
+            }
+
+            output << format_column_marker(marker_column) << "\n";
         }
     }
     
@@ -344,7 +351,11 @@ auto DiagnosticFormatter::truncate_line(StringView line) const -> String {
     if (line.length() <= options_.max_line_length) {
         return String(line);
     }
-    
+
+    if (options_.max_line_length <= 3) {
+        return String(line.substr(0, options_.max_line_length));
+    }
+
     String result(line.substr(0, options_.max_line_length - 3));
     result += "...";
     return result;

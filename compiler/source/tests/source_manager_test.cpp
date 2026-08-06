@@ -13,6 +13,7 @@
 #include <thread>
 #include <atomic>
 
+using namespace photon;
 using namespace photon::source;
 using namespace photon::memory;
 
@@ -775,4 +776,133 @@ TEST_F(SourceManagerTest, SourceManagerConcurrentAccess) {
     }
 
     EXPECT_EQ(success_count.load(), 4);
+}
+
+// === Regression Tests ===
+
+TEST_F(SourceManagerTest, Utf8ValidationRejectsMalformedSequences) {
+    const std::vector<std::string> malformed = {
+        std::string("\xC0\x80", 2),                 // overlong two-byte NUL
+        std::string("\xC1\xBF", 2),                 // overlong two-byte
+        std::string("\xE0\x80\x80", 3),             // overlong three-byte
+        std::string("\xED\xA0\x80", 3),             // UTF-16 surrogate D800
+        std::string("\xF4\x90\x80\x80", 4),         // above U+10FFFF
+        std::string("\xF5\x80\x80\x80", 4),         // above U+10FFFF
+        std::string("\xE2\x28\xA1", 3),             // bad continuation byte
+        std::string("\xC3", 1),                     // truncated two-byte
+        std::string("\x80", 1),                     // stray continuation byte
+    };
+
+    SourceManagerOptions options;
+    options.validate_utf8 = false;
+    SourceManager manager(*arena_, nullptr, options);
+
+    int index = 0;
+    for (const auto& bytes : malformed) {
+        auto id = manager.load_from_string("bad" + std::to_string(index++) + ".pht", bytes);
+        ASSERT_TRUE(id.has_value());
+        const auto* file = manager.get_file(id.value());
+        ASSERT_NE(file, nullptr);
+        EXPECT_FALSE(file->validate_utf8()) << "accepted malformed sequence #" << index;
+    }
+}
+
+TEST_F(SourceManagerTest, Utf8ValidationAcceptsWellFormedSequences) {
+    SourceManager manager(*arena_);
+    auto id = manager.load_from_string("good.pht", std::string("ascii \xC3\xA9 \xE2\x82\xAC \xF0\x9F\x9A\x80"));
+    ASSERT_TRUE(id.has_value());
+    const auto* file = manager.get_file(id.value());
+    ASSERT_NE(file, nullptr);
+    EXPECT_TRUE(file->validate_utf8());
+}
+
+TEST_F(SourceManagerTest, InvalidUtf8IsRejectedWhenValidationEnabled) {
+    SourceManagerOptions options;
+    options.validate_utf8 = true;
+    SourceManager manager(*arena_, nullptr, options);
+
+    auto result = manager.load_from_string("invalid.pht", std::string("\xC0\x80", 2));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), SourceError::InvalidUtf8);
+}
+
+TEST_F(SourceManagerTest, CreateLocationFromFilenameOutlivesCallerBuffer) {
+    SourceManager manager(*arena_);
+    auto id = manager.load_from_string("owned.pht", "abc\ndef\n");
+    ASSERT_TRUE(id.has_value());
+
+    photon::diagnostics::SourceLocation location;
+    {
+        std::string temporary_name = "owned.pht";
+        auto result = manager.create_location(temporary_name, 2, 1);
+        ASSERT_TRUE(result.has_value());
+        location = result.value();
+        temporary_name.assign(64, 'x');
+    }
+
+    EXPECT_EQ(location.filename(), "owned.pht");
+}
+
+TEST_F(SourceManagerTest, GetContentAtRejectsOutOfRangeOffset) {
+    SourceManager manager(*arena_);
+    auto id = manager.load_from_string("short.pht", "abc");
+    ASSERT_TRUE(id.has_value());
+    const auto* file = manager.get_file(id.value());
+    ASSERT_NE(file, nullptr);
+
+    photon::diagnostics::SourceLocation beyond(file->filename(), 1, 1, 100);
+    auto result = manager.get_content_at(beyond, 4);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(SourceManagerTest, GetContentAtClampsLengthWithinFile) {
+    SourceManager manager(*arena_);
+    auto id = manager.load_from_string("clamp.pht", "abcdef");
+    ASSERT_TRUE(id.has_value());
+    const auto* file = manager.get_file(id.value());
+    ASSERT_NE(file, nullptr);
+
+    photon::diagnostics::SourceLocation at(file->filename(), 1, 4, 3);
+    auto result = manager.get_content_at(at, 100);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), "def");
+}
+
+TEST_F(SourceManagerTest, Utf8BomIsStrippedFromContent) {
+    SourceManager manager(*arena_);
+    auto id = manager.load_from_string("bom.pht", std::string("\xEF\xBB\xBF") + "fn main() {}");
+    ASSERT_TRUE(id.has_value());
+    const auto* file = manager.get_file(id.value());
+    ASSERT_NE(file, nullptr);
+
+    EXPECT_EQ(file->content(), "fn main() {}");
+    EXPECT_EQ(file->statistics().encoding, SourceFile::Encoding::Utf8WithBom);
+
+    auto line = file->get_line_content(1);
+    ASSERT_TRUE(line.has_value());
+    EXPECT_EQ(line.value(), "fn main() {}");
+}
+
+TEST_F(SourceManagerTest, LoadedFilesHaveNoDuplicates) {
+    SourceManager manager(*arena_);
+    auto path = (test_dir_ / "simple.pht").string();
+    auto id = manager.load_file(path);
+    ASSERT_TRUE(id.has_value());
+
+    auto files = manager.get_loaded_files();
+    std::sort(files.begin(), files.end());
+    auto last = std::unique(files.begin(), files.end());
+    EXPECT_EQ(last, files.end());
+    EXPECT_EQ(files.size(), manager.get_statistics().total_files);
+}
+
+TEST_F(SourceManagerTest, ColumnInsideCarriageReturnLineFeedIsRejected) {
+    SourceManager manager(*arena_);
+    auto id = manager.load_from_string("crlf.pht", "ab\r\ncd\r\n");
+    ASSERT_TRUE(id.has_value());
+    const auto* file = manager.get_file(id.value());
+    ASSERT_NE(file, nullptr);
+
+    EXPECT_TRUE(file->line_column_to_offset(1, 3).has_value());
+    EXPECT_FALSE(file->line_column_to_offset(1, 4).has_value());
 }

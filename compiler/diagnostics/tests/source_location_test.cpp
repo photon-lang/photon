@@ -8,6 +8,7 @@
 #include "photon/diagnostics/source_location.hpp"
 #include <gtest/gtest.h>
 
+using namespace photon;
 using namespace photon::diagnostics;
 
 namespace {

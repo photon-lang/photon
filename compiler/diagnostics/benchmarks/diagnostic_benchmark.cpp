@@ -11,6 +11,7 @@
 #include "photon/memory/arena.hpp"
 #include <benchmark/benchmark.h>
 
+using namespace photon;
 using namespace photon::diagnostics;
 using namespace photon::memory;
 
@@ -18,9 +19,9 @@ namespace {
 
 // Test data for benchmarks
 constexpr const char* TEST_FILENAME = "benchmark_test.pht";
-constexpr usize TEST_LINE = 42;
-constexpr usize TEST_COLUMN = 15;
-constexpr usize TEST_OFFSET = 1000;
+constexpr u32 TEST_LINE = 42;
+constexpr u32 TEST_COLUMN = 15;
+constexpr u32 TEST_OFFSET = 1000;
 
 // Helper to create consistent test data
 inline auto create_test_location() -> SourceLocation {
@@ -238,13 +239,14 @@ static void BM_DiagnosticEngineSortByLocation(benchmark::State& state) {
     
     // Pre-populate with diagnostics in random order
     for (int i = 100; i >= 0; --i) {
-        auto location = SourceLocation(TEST_FILENAME, static_cast<usize>(i), 1, static_cast<usize>(i * 10));
+        auto location = SourceLocation(TEST_FILENAME, static_cast<u32>(i) + 1, 1, static_cast<u32>(i * 10));
         engine.error(DiagnosticCode::SyntaxUnexpectedToken, "error", location);
     }
     
     for (auto _ : state) {
         engine.sort_by_location();
-        benchmark::DoNotOptimize(engine.diagnostics());
+        auto count = engine.total_count();
+        benchmark::DoNotOptimize(count);
     }
 }
 BENCHMARK(BM_DiagnosticEngineSortByLocation);
@@ -266,7 +268,8 @@ static void BM_DiagnosticEngineSortBySeverity(benchmark::State& state) {
     
     for (auto _ : state) {
         engine.sort_by_severity();
-        benchmark::DoNotOptimize(engine.diagnostics());
+        auto count = engine.total_count();
+        benchmark::DoNotOptimize(count);
     }
 }
 BENCHMARK(BM_DiagnosticEngineSortBySeverity);
@@ -420,14 +423,14 @@ static void BM_DiagnosticFormatterMultipleDiagnostics(benchmark::State& state) {
     options.show_colors = false;
     DiagnosticFormatter formatter(options);
     
-    Vec<Diagnostic> diagnostics;
+    Vec<Diagnostic> diagnostic_list;
     for (int i = 0; i < 10; ++i) {
         auto message = create_test_message();
-        diagnostics.emplace_back(message);
+        diagnostic_list.emplace_back(message);
     }
-    
+
     for (auto _ : state) {
-        auto result = formatter.format_all(diagnostics);
+        auto result = formatter.format_all(diagnostic_list);
         benchmark::DoNotOptimize(result);
     }
 }

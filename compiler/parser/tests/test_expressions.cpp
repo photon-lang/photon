@@ -22,7 +22,8 @@ protected:
     }
     
     auto parse_expression(const std::string& source) -> photon::Result<ASTPtr<Expression>, ParseError> {
-        auto file_id_result = source_mgr->load_from_string("test.ph", source);
+        auto file_id_result = source_mgr->load_from_string(
+            "test" + std::to_string(++parse_counter) + ".ph", source);
         if (!file_id_result) {
             return photon::Result<ASTPtr<Expression>, ParseError>(ParseError::UnexpectedEof);
         }
@@ -48,6 +49,7 @@ protected:
 
     std::unique_ptr<MemoryArena<>> arena;
     std::unique_ptr<SourceManager> source_mgr;
+    int parse_counter = 0;
 };
 
 // === Complex Expression Trees ===
@@ -217,17 +219,53 @@ TEST_F(ExpressionTest, BitwiseOperatorPrecedence) {
     ASSERT_TRUE(expr_result.has_value());
     
     auto& expr = expr_result.value();
-    EXPECT_TRUE(expr->is<BinaryExpr>());
-    
-    // Should parse as ((a & b) | c) ^ d due to precedence
-    auto xor_expr = expr->as<BinaryExpr>();
-    EXPECT_EQ(xor_expr->get_operator(), BinaryExpr::Operator::BitwiseXor);
-    
-    auto or_expr = xor_expr->left().as<BinaryExpr>();
+    ASSERT_TRUE(expr->is<BinaryExpr>());
+
+    // '&' binds tighter than '^', which binds tighter than '|', so this is (a & b) | (c ^ d)
+    auto or_expr = expr->as<BinaryExpr>();
+    ASSERT_NE(or_expr, nullptr);
     EXPECT_EQ(or_expr->get_operator(), BinaryExpr::Operator::BitwiseOr);
-    
+
     auto and_expr = or_expr->left().as<BinaryExpr>();
+    ASSERT_NE(and_expr, nullptr);
     EXPECT_EQ(and_expr->get_operator(), BinaryExpr::Operator::BitwiseAnd);
+
+    auto xor_expr = or_expr->right().as<BinaryExpr>();
+    ASSERT_NE(xor_expr, nullptr);
+    EXPECT_EQ(xor_expr->get_operator(), BinaryExpr::Operator::BitwiseXor);
+}
+
+TEST_F(ExpressionTest, CompoundAssignmentOperators) {
+    auto expr_result = parse_expression("x += 1");
+    ASSERT_TRUE(expr_result.has_value());
+
+    auto& expr = expr_result.value();
+    ASSERT_TRUE(expr->is<BinaryExpr>());
+    EXPECT_EQ(expr->as<BinaryExpr>()->get_operator(), BinaryExpr::Operator::AddAssign);
+
+    auto shift_result = parse_expression("x <<= 2");
+    ASSERT_TRUE(shift_result.has_value());
+    ASSERT_TRUE(shift_result.value()->is<BinaryExpr>());
+    EXPECT_EQ(shift_result.value()->as<BinaryExpr>()->get_operator(),
+              BinaryExpr::Operator::LeftShiftAssign);
+}
+
+TEST_F(ExpressionTest, JuxtaposedOperandsAreRejected) {
+    auto expr_result = parse_expression("a b");
+    EXPECT_FALSE(expr_result.has_value());
+}
+
+TEST_F(ExpressionTest, CallResultParticipatesInBinaryExpression) {
+    auto expr_result = parse_expression("f(1) + 2");
+    ASSERT_TRUE(expr_result.has_value());
+
+    auto& expr = expr_result.value();
+    ASSERT_TRUE(expr->is<BinaryExpr>());
+
+    auto add = expr->as<BinaryExpr>();
+    EXPECT_EQ(add->get_operator(), BinaryExpr::Operator::Add);
+    EXPECT_TRUE(add->left().is<CallExpr>());
+    EXPECT_TRUE(add->right().is<IntegerLiteral>());
 }
 
 // === Complex Parenthesized Expressions ===

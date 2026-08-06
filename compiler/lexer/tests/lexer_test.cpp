@@ -14,6 +14,8 @@
 #include <filesystem>
 #include <thread>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 
 using namespace photon;
 using namespace photon::lexer;
@@ -684,6 +686,121 @@ TEST_F(LexerTest, FactoryCreateTestLexer) {
     
     auto result = lexer->tokenize("hello world");
     ASSERT_TRUE(result.has_value());
+}
+
+/* Regression Tests */
+
+TEST_F(LexerTest, TokenizesExponentWithoutFractionalPart) {
+    auto result = tokenize_string("1e5 532e-9 2E+3");
+    ASSERT_TRUE(result.has_value());
+
+    auto stream = result.value();
+    expect_token_value(stream.current(), TokenType::FloatLiteral, 1e5);
+    stream.advance();
+    expect_token_value(stream.current(), TokenType::FloatLiteral, 532e-9);
+    stream.advance();
+    expect_token_value(stream.current(), TokenType::FloatLiteral, 2e+3);
+}
+
+TEST_F(LexerTest, TokenizesDigitSeparators) {
+    auto result = tokenize_string("1_000_000 0xFF_FF 0b1010_1010 3.141_592");
+    ASSERT_TRUE(result.has_value());
+
+    auto stream = result.value();
+    expect_token_value(stream.current(), TokenType::IntegerLiteral, static_cast<i64>(1000000));
+    stream.advance();
+    expect_token_value(stream.current(), TokenType::IntegerLiteral, static_cast<i64>(0xFFFF));
+    stream.advance();
+    expect_token_value(stream.current(), TokenType::IntegerLiteral, static_cast<i64>(0b10101010));
+    stream.advance();
+    expect_token_value(stream.current(), TokenType::FloatLiteral, 3.141592);
+}
+
+TEST_F(LexerTest, IdeLexerEmitsNewlineTokens) {
+    auto ide_lexer = LexerFactory::create_ide_lexer(*source_manager_, *arena_);
+    ASSERT_NE(ide_lexer, nullptr);
+
+    auto result = ide_lexer->tokenize("hello\nworld");
+    ASSERT_TRUE(result.has_value());
+
+    auto stream = result.value();
+    expect_token(stream.current(), TokenType::Identifier, "hello");
+    stream.advance();
+    expect_token(stream.current(), TokenType::Newline);
+    stream.advance();
+    expect_token(stream.current(), TokenType::Identifier, "world");
+}
+
+TEST_F(LexerTest, TokenTypeNamesCoverDelimitersAndPunctuation) {
+    EXPECT_EQ(token_type_name(TokenType::LeftParen), "(");
+    EXPECT_EQ(token_type_name(TokenType::RightParen), ")");
+    EXPECT_EQ(token_type_name(TokenType::LeftBrace), "{");
+    EXPECT_EQ(token_type_name(TokenType::RightBracket), "]");
+    EXPECT_EQ(token_type_name(TokenType::Comma), ",");
+    EXPECT_EQ(token_type_name(TokenType::Semicolon), ";");
+    EXPECT_EQ(token_type_name(TokenType::Dollar), "$");
+}
+
+TEST_F(LexerTest, TokenOffsetPointsAtTokenStart) {
+    auto result = tokenize_string("ab cd");
+    ASSERT_TRUE(result.has_value());
+
+    auto stream = result.value();
+    EXPECT_EQ(stream.current().location.offset(), 0u);
+    stream.advance();
+    EXPECT_EQ(stream.current().location.offset(), 3u);
+}
+
+TEST_F(LexerTest, TokenFilenameSurvivesLaterTokenization) {
+    auto first = lexer_->tokenize("alpha", "first.ph");
+    ASSERT_TRUE(first.has_value());
+    auto first_stream = first.value();
+
+    auto second = lexer_->tokenize("beta", "second.ph");
+    ASSERT_TRUE(second.has_value());
+
+    EXPECT_EQ(first_stream.current().location.filename(), "first.ph");
+    EXPECT_EQ(second.value().current().location.filename(), "second.ph");
+}
+
+TEST_F(LexerTest, HandlesManyConsecutiveComments) {
+    String content;
+    content.reserve(400000);
+    for (int i = 0; i < 20000; ++i) {
+        content += "// comment line\n";
+    }
+    content += "let x = 1\n";
+
+    auto result = tokenize_string(content);
+    ASSERT_TRUE(result.has_value());
+
+    auto stream = result.value();
+    expect_token(stream.current(), TokenType::KwLet);
+}
+
+TEST_F(LexerTest, UnterminatedBlockCommentReportsUnexpectedEof) {
+    auto result = tokenize_string("/* never closed");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), LexicalError::UnexpectedEof);
+}
+
+TEST_F(LexerTest, EscapeSequencesAdvanceColumnTracking) {
+    auto result = tokenize_string(R"("a\nb" x)");
+    ASSERT_TRUE(result.has_value());
+
+    auto stream = result.value();
+    expect_token(stream.current(), TokenType::StringLiteral, "a\nb");
+    stream.advance();
+    expect_token(stream.current(), TokenType::Identifier, "x");
+    EXPECT_EQ(stream.current().location.column(), 8u);
+}
+
+TEST_F(LexerTest, StatisticsRateIsFiniteForTinyInput) {
+    auto result = tokenize_string("x");
+    ASSERT_TRUE(result.has_value());
+
+    auto stats = lexer_->get_statistics();
+    EXPECT_TRUE(std::isfinite(stats.tokens_per_second));
 }
 
 } // anonymous namespace

@@ -252,6 +252,7 @@ enum class LexicalError : u32 {
     UnexpectedEof = 2007,         ///< Unexpected end of file
     InvalidFloat = 2008,          ///< Malformed floating-point literal
     InvalidRadix = 2009,          ///< Invalid numeric base
+    InvalidSourceFile = 2010,     ///< Source file could not be resolved from its identifier
 };
 
 /**

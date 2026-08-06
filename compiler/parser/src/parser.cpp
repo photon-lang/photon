@@ -25,7 +25,11 @@ auto Parser::parse_program() -> Result<ASTPtr<Program>, ParseError> {
     if (!declarations_result) {
         return Result<ASTPtr<Program>, ParseError>(declarations_result.error());
     }
-    
+
+    if (has_errors()) {
+        return Result<ASTPtr<Program>, ParseError>(errors_.front());
+    }
+
     auto source_range = make_range(start_location);
     auto program = factory_.create<Program>(std::move(declarations_result.value()), source_range);
     
@@ -33,7 +37,17 @@ auto Parser::parse_program() -> Result<ASTPtr<Program>, ParseError> {
 }
 
 auto Parser::parse_expression() -> Result<ASTPtr<Expression>, ParseError> {
-    return parse_expr();
+    auto expr_result = parse_expr();
+    if (!expr_result) {
+        return expr_result;
+    }
+
+    if (!is_eof()) {
+        report_error(ParseError::UnexpectedToken);
+        return Result<ASTPtr<Expression>, ParseError>(ParseError::UnexpectedToken);
+    }
+
+    return expr_result;
 }
 
 auto Parser::parse_statement() -> Result<ASTPtr<Statement>, ParseError> {
@@ -59,20 +73,24 @@ auto Parser::parse_statement() -> Result<ASTPtr<Statement>, ParseError> {
 
 auto Parser::parse_declarations() -> Result<ASTList<Declaration>, ParseError> {
     auto declarations = factory_.create_list<Declaration>();
-    
-    while (!is_eof() && current().type != lexer::TokenType::RightBrace) {
+
+    while (!is_eof()) {
+        auto position_before = tokens_.position();
         auto decl_result = parse_declaration();
         if (!decl_result) {
             if (options_.enable_error_recovery) {
                 recover(RecoveryStrategy::Synchronize);
+                if (tokens_.position() == position_before) {
+                    recover(RecoveryStrategy::Skip);
+                }
                 continue;
             }
             return Result<ASTList<Declaration>, ParseError>(decl_result.error());
         }
-        
+
         declarations.push_back(std::move(decl_result.value()));
     }
-    
+
     return Result<ASTList<Declaration>, ParseError>(std::move(declarations));
 }
 
@@ -157,6 +175,10 @@ auto Parser::parse_function_parameters() -> Result<Vec<FunctionDecl::Parameter>,
         
         if (current().type == lexer::TokenType::Comma) {
             advance();
+            if (current().type == lexer::TokenType::RightParen) {
+                report_error(ParseError::UnexpectedToken);
+                return Result<Vec<FunctionDecl::Parameter>, ParseError>(ParseError::UnexpectedToken);
+            }
         } else if (current().type != lexer::TokenType::RightParen) {
             report_error(ParseError::MissingDelimiter);
             return Result<Vec<FunctionDecl::Parameter>, ParseError>(ParseError::MissingDelimiter);
@@ -201,64 +223,116 @@ auto Parser::parse_parameter() -> Result<FunctionDecl::Parameter, ParseError> {
 }
 
 auto Parser::parse_block() -> Result<ASTPtr<Block>, ParseError> {
+    auto recursion_guard = enter_recursion();
+    if (!recursion_guard) {
+        report_error(recursion_guard.error());
+        return Result<ASTPtr<Block>, ParseError>(recursion_guard.error());
+    }
+
     auto start_location = current_location();
-    
+
     auto left_brace_result = consume(lexer::TokenType::LeftBrace);
     if (!left_brace_result) {
+        exit_recursion();
         return Result<ASTPtr<Block>, ParseError>(left_brace_result.error());
     }
-    
+
     auto statements_result = parse_statement_list();
     if (!statements_result) {
+        exit_recursion();
         return Result<ASTPtr<Block>, ParseError>(statements_result.error());
     }
-    
+
     auto right_brace_result = consume(lexer::TokenType::RightBrace);
     if (!right_brace_result) {
+        exit_recursion();
         return Result<ASTPtr<Block>, ParseError>(right_brace_result.error());
     }
-    
+
     auto source_range = make_range(start_location);
     auto block = factory_.create<Block>(std::move(statements_result.value()), source_range);
-    
+
+    exit_recursion();
     return Result<ASTPtr<Block>, ParseError>(std::move(block));
 }
 
 auto Parser::parse_statement_list() -> Result<ASTList<Statement>, ParseError> {
     auto statements = factory_.create_list<Statement>();
     
+    u32 previous_statement_end_line = 0;
+    bool separator_seen = true;
+
     while (current().type != lexer::TokenType::RightBrace && !is_eof()) {
+        auto position_before = tokens_.position();
+
+        if (current().type == lexer::TokenType::Newline || current().type == lexer::TokenType::Semicolon) {
+            advance();
+            separator_seen = true;
+            continue;
+        }
+
+        if (!separator_seen && current().location.line() == previous_statement_end_line) {
+            report_error(ParseError::ExpectedStatement);
+            if (options_.enable_error_recovery) {
+                recover(RecoveryStrategy::Skip);
+                continue;
+            }
+            return Result<ASTList<Statement>, ParseError>(ParseError::ExpectedStatement);
+        }
+
         if (current().type == lexer::TokenType::KwLet) {
             auto var_result = parse_var_decl();
             if (!var_result) {
                 if (options_.enable_error_recovery) {
                     recover(RecoveryStrategy::Synchronize);
+                    if (tokens_.position() == position_before) {
+                        recover(RecoveryStrategy::Skip);
+                    }
                     continue;
                 }
                 return Result<ASTList<Statement>, ParseError>(var_result.error());
             }
             statements.push_back(std::move(var_result.value()));
-        } else {
-            if (current().type == lexer::TokenType::Newline || current().type == lexer::TokenType::Semicolon) {
-                advance();
-                continue;
+        } else if (current().type == lexer::TokenType::LeftBrace) {
+            auto block_result = parse_block();
+            if (!block_result) {
+                if (options_.enable_error_recovery) {
+                    recover(RecoveryStrategy::Synchronize);
+                    if (tokens_.position() == position_before) {
+                        recover(RecoveryStrategy::Skip);
+                    }
+                    continue;
+                }
+                return Result<ASTList<Statement>, ParseError>(block_result.error());
             }
-            
+            statements.push_back(std::move(block_result.value()));
+        } else {
+            auto start_location = current_location();
             auto expr_result = parse_expr();
             if (!expr_result) {
                 if (options_.enable_error_recovery) {
                     recover(RecoveryStrategy::Synchronize);
+                    if (tokens_.position() == position_before) {
+                        recover(RecoveryStrategy::Skip);
+                    }
                     continue;
                 }
                 return Result<ASTList<Statement>, ParseError>(expr_result.error());
             }
-            
-            if (current().type == lexer::TokenType::Semicolon) {
-                advance();
-            }
+
+            auto source_range = make_range(start_location);
+            statements.push_back(factory_.create<ExprStmt>(std::move(expr_result.value()), source_range));
+        }
+
+        previous_statement_end_line = previous_token_line();
+        separator_seen = false;
+
+        if (current().type == lexer::TokenType::Semicolon) {
+            advance();
+            separator_seen = true;
         }
     }
-    
+
     return Result<ASTList<Statement>, ParseError>(std::move(statements));
 }
 
@@ -316,23 +390,30 @@ auto Parser::parse_var_decl() -> Result<ASTPtr<VarDecl>, ParseError> {
 auto Parser::parse_expr(i32 min_precedence) -> Result<ASTPtr<Expression>, ParseError> {
     auto recursion_guard = enter_recursion();
     if (!recursion_guard) {
+        report_error(recursion_guard.error());
         return Result<ASTPtr<Expression>, ParseError>(recursion_guard.error());
     }
-    
+
     auto left_result = parse_primary();
     if (!left_result) {
         exit_recursion();
         return left_result;
     }
-    
-    auto left = std::move(left_result.value());
-    
+
+    auto postfix_result = parse_postfix(std::move(left_result.value()));
+    if (!postfix_result) {
+        exit_recursion();
+        return postfix_result;
+    }
+
+    auto left = std::move(postfix_result.value());
+
     while (!is_eof()) {
         auto current_precedence = get_precedence(current().type);
-        if (current_precedence < min_precedence) {
+        if (current_precedence == to_int(Precedence::None) || current_precedence < min_precedence) {
             break;
         }
-        
+
         auto op_token = current();
         advance();
         
@@ -349,10 +430,11 @@ auto Parser::parse_expr(i32 min_precedence) -> Result<ASTPtr<Expression>, ParseE
         
         auto binary_op_result = token_to_binary_op(op_token.type);
         if (!binary_op_result) {
+            report_error(binary_op_result.error());
             exit_recursion();
             return Result<ASTPtr<Expression>, ParseError>(binary_op_result.error());
         }
-        
+
         auto source_range = std::make_pair(left->source_range().first, right_result.value()->source_range().second);
         left = factory_.create<BinaryExpr>(
             std::move(left),
@@ -361,10 +443,9 @@ auto Parser::parse_expr(i32 min_precedence) -> Result<ASTPtr<Expression>, ParseE
             source_range
         );
     }
-    
-    auto postfix_result = parse_postfix(std::move(left));
+
     exit_recursion();
-    return postfix_result;
+    return Result<ASTPtr<Expression>, ParseError>(std::move(left));
 }
 
 auto Parser::parse_primary() -> Result<ASTPtr<Expression>, ParseError> {
@@ -372,6 +453,7 @@ auto Parser::parse_primary() -> Result<ASTPtr<Expression>, ParseError> {
         case lexer::TokenType::IntegerLiteral:
         case lexer::TokenType::FloatLiteral:
         case lexer::TokenType::StringLiteral:
+        case lexer::TokenType::CharLiteral:
         case lexer::TokenType::BoolLiteral:
             return parse_literal();
             
@@ -498,6 +580,18 @@ auto Parser::parse_literal() -> Result<ASTPtr<Expression>, ParseError> {
             return Result<ASTPtr<Expression>, ParseError>(std::move(literal));
         }
         
+        case lexer::TokenType::CharLiteral: {
+            if (!token.value.is<StringView>()) {
+                report_error(ParseError::InvalidLiteral);
+                return Result<ASTPtr<Expression>, ParseError>(ParseError::InvalidLiteral);
+            }
+            auto literal = factory_.create<CharLiteral>(
+                token.value.get<StringView>(),
+                std::make_pair(location, location)
+            );
+            return Result<ASTPtr<Expression>, ParseError>(std::move(literal));
+        }
+
         case lexer::TokenType::BoolLiteral: {
             if (!token.value.is<bool>()) {
                 report_error(ParseError::InvalidLiteral);
@@ -583,11 +677,42 @@ auto Parser::parse_call_arguments() -> Result<ASTList<Expression>, ParseError> {
 }
 
 auto Parser::parse_type() -> Result<ASTPtr<Expression>, ParseError> {
+    switch (current().type) {
+        case lexer::TokenType::KwI8:
+        case lexer::TokenType::KwI16:
+        case lexer::TokenType::KwI32:
+        case lexer::TokenType::KwI64:
+        case lexer::TokenType::KwU8:
+        case lexer::TokenType::KwU16:
+        case lexer::TokenType::KwU32:
+        case lexer::TokenType::KwU64:
+        case lexer::TokenType::KwF32:
+        case lexer::TokenType::KwF64:
+        case lexer::TokenType::KwBool:
+        case lexer::TokenType::KwChar:
+        case lexer::TokenType::KwStr:
+        case lexer::TokenType::KwSelf: {
+            auto token = current();
+            auto location = current_location();
+            advance();
+
+            auto type_name = lexer::token_type_name(token.type);
+            ASTPtr<Expression> expr = factory_.create<Identifier>(
+                type_name,
+                std::make_pair(location, location)
+            );
+            return Result<ASTPtr<Expression>, ParseError>(std::move(expr));
+        }
+
+        default:
+            break;
+    }
+
     auto id_result = parse_identifier();
     if (!id_result) {
         return Result<ASTPtr<Expression>, ParseError>(id_result.error());
     }
-    // Convert Identifier to Expression using move
+
     ASTPtr<Expression> expr = std::move(id_result.value());
     return Result<ASTPtr<Expression>, ParseError>(std::move(expr));
 }
@@ -727,6 +852,26 @@ auto Parser::token_to_binary_op(lexer::TokenType type) const noexcept -> Result<
             return Result<BinaryExpr::Operator, ParseError>(BinaryExpr::Operator::Range);
         case lexer::TokenType::DotDotEqual:
             return Result<BinaryExpr::Operator, ParseError>(BinaryExpr::Operator::RangeInclusive);
+        case lexer::TokenType::PlusAssign:
+            return Result<BinaryExpr::Operator, ParseError>(BinaryExpr::Operator::AddAssign);
+        case lexer::TokenType::MinusAssign:
+            return Result<BinaryExpr::Operator, ParseError>(BinaryExpr::Operator::SubAssign);
+        case lexer::TokenType::StarAssign:
+            return Result<BinaryExpr::Operator, ParseError>(BinaryExpr::Operator::MulAssign);
+        case lexer::TokenType::SlashAssign:
+            return Result<BinaryExpr::Operator, ParseError>(BinaryExpr::Operator::DivAssign);
+        case lexer::TokenType::PercentAssign:
+            return Result<BinaryExpr::Operator, ParseError>(BinaryExpr::Operator::ModAssign);
+        case lexer::TokenType::AndAssign:
+            return Result<BinaryExpr::Operator, ParseError>(BinaryExpr::Operator::BitwiseAndAssign);
+        case lexer::TokenType::OrAssign:
+            return Result<BinaryExpr::Operator, ParseError>(BinaryExpr::Operator::BitwiseOrAssign);
+        case lexer::TokenType::XorAssign:
+            return Result<BinaryExpr::Operator, ParseError>(BinaryExpr::Operator::BitwiseXorAssign);
+        case lexer::TokenType::LeftShiftAssign:
+            return Result<BinaryExpr::Operator, ParseError>(BinaryExpr::Operator::LeftShiftAssign);
+        case lexer::TokenType::RightShiftAssign:
+            return Result<BinaryExpr::Operator, ParseError>(BinaryExpr::Operator::RightShiftAssign);
         default:
             return Result<BinaryExpr::Operator, ParseError>(ParseError::ExpectedOperator);
     }
@@ -836,6 +981,15 @@ auto Parser::exit_recursion() noexcept -> void {
 
 auto Parser::current_location() const noexcept -> diagnostics::SourceLocation {
     return current().location;
+}
+
+auto Parser::previous_token_line() const noexcept -> u32 {
+    auto position = tokens_.position();
+    if (position == 0) {
+        return 0;
+    }
+
+    return (tokens_.begin() + static_cast<isize>(position - 1))->location.line();
 }
 
 auto Parser::make_range(const diagnostics::SourceLocation& start) const noexcept -> SourceRange {

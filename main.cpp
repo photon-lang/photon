@@ -155,17 +155,67 @@ public:
         std::cout << node.name();
     }
     
-    // Required virtual methods (stub implementations)
-    void visit_float_literal(FloatLiteral&) override {}
-    void visit_float_literal(const FloatLiteral&) override {}
-    void visit_string_literal(StringLiteral&) override {}
-    void visit_string_literal(const StringLiteral&) override {}
-    void visit_bool_literal(BoolLiteral&) override {}
-    void visit_bool_literal(const BoolLiteral&) override {}
-    void visit_unary_expr(UnaryExpr&) override {}
-    void visit_unary_expr(const UnaryExpr&) override {}
-    void visit_call_expr(CallExpr&) override {}
-    void visit_call_expr(const CallExpr&) override {}
+    void visit_expr_stmt(ExprStmt& node) override {
+        print_indent();
+        SimpleASTVisitor visitor(0);
+        node.expression_mut().accept(visitor);
+        std::cout << "\n";
+    }
+
+    void visit_expr_stmt(const ExprStmt& node) override {
+        print_indent();
+        SimpleASTVisitor visitor(0);
+        node.expression().accept(visitor);
+        std::cout << "\n";
+    }
+
+    void visit_float_literal(FloatLiteral& node) override {
+        std::cout << node.value();
+    }
+
+    void visit_float_literal(const FloatLiteral& node) override {
+        std::cout << node.value();
+    }
+
+    void visit_string_literal(StringLiteral& node) override {
+        std::cout << '"' << node.value() << '"';
+    }
+
+    void visit_string_literal(const StringLiteral& node) override {
+        std::cout << '"' << node.value() << '"';
+    }
+
+    void visit_char_literal(CharLiteral& node) override {
+        std::cout << '\'' << node.value() << '\'';
+    }
+
+    void visit_char_literal(const CharLiteral& node) override {
+        std::cout << '\'' << node.value() << '\'';
+    }
+
+    void visit_bool_literal(BoolLiteral& node) override {
+        std::cout << (node.value() ? "true" : "false");
+    }
+
+    void visit_bool_literal(const BoolLiteral& node) override {
+        std::cout << (node.value() ? "true" : "false");
+    }
+
+    void visit_unary_expr(UnaryExpr& node) override {
+        std::cout << node.to_string();
+    }
+
+    void visit_unary_expr(const UnaryExpr& node) override {
+        std::cout << node.to_string();
+    }
+
+    void visit_call_expr(CallExpr& node) override {
+        std::cout << node.to_string();
+    }
+
+    void visit_call_expr(const CallExpr& node) override {
+        std::cout << node.to_string();
+    }
 
 private:
     int indent_;

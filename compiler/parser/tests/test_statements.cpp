@@ -22,7 +22,8 @@ protected:
     }
     
     auto parse_statement(const std::string& source) -> photon::Result<ASTPtr<Statement>, ParseError> {
-        auto file_id_result = source_mgr->load_from_string("test.ph", source);
+        auto file_id_result = source_mgr->load_from_string(
+            "test" + std::to_string(++parse_counter) + ".ph", source);
         if (!file_id_result) {
             return photon::Result<ASTPtr<Statement>, ParseError>(ParseError::UnexpectedEof);
         }
@@ -48,6 +49,7 @@ protected:
 
     std::unique_ptr<MemoryArena<>> arena;
     std::unique_ptr<SourceManager> source_mgr;
+    int parse_counter = 0;
 };
 
 // === Variable Declaration Tests ===

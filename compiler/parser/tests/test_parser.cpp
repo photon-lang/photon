@@ -22,7 +22,8 @@ protected:
     }
     
     auto parse_from_string(const std::string& source) -> std::unique_ptr<Parser> {
-        auto file_id_result = source_mgr->load_from_string("test.ph", source);
+        auto file_id_result = source_mgr->load_from_string(
+            "test" + std::to_string(++parse_counter) + ".ph", source);
         EXPECT_TRUE(file_id_result.has_value());
         
         auto file_id = file_id_result.value();
@@ -40,6 +41,7 @@ protected:
 
     std::unique_ptr<MemoryArena<>> arena;
     std::unique_ptr<SourceManager> source_mgr;
+    int parse_counter = 0;
 };
 
 // === Basic Parser Creation ===
@@ -416,7 +418,42 @@ TEST_F(ParserTest, MissingDelimiterError) {
 TEST_F(ParserTest, UnterminatedParentheses) {
     auto parser = parse_from_string("(1 + 2");
     auto expr_result = parser->parse_expression();
-    
+
+    EXPECT_FALSE(expr_result.has_value());
+    EXPECT_TRUE(parser->has_errors());
+}
+
+// === Regression Cases ===
+
+TEST_F(ParserTest, StrayTopLevelClosingBraceIsRejected) {
+    auto parser = parse_from_string("} fn main() {}");
+    auto program_result = parser->parse_program();
+
+    EXPECT_FALSE(program_result.has_value());
+    EXPECT_TRUE(parser->has_errors());
+}
+
+TEST_F(ParserTest, DeeplyNestedBlocksTerminate) {
+    std::string source = "fn main() ";
+    source.reserve(8192);
+    for (int i = 0; i < 2000; ++i) {
+        source += "{";
+    }
+    for (int i = 0; i < 2000; ++i) {
+        source += "}";
+    }
+
+    auto parser = parse_from_string(source);
+    auto program_result = parser->parse_program();
+
+    EXPECT_FALSE(program_result.has_value());
+    EXPECT_TRUE(parser->has_errors());
+}
+
+TEST_F(ParserTest, ParseExpressionRejectsTrailingInput) {
+    auto parser = parse_from_string("1 + 2 )");
+    auto expr_result = parser->parse_expression();
+
     EXPECT_FALSE(expr_result.has_value());
     EXPECT_TRUE(parser->has_errors());
 }

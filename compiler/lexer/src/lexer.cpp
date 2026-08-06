@@ -10,6 +10,8 @@
 #include <cctype>
 #include <charconv>
 #include <chrono>
+#include <cstring>
+#include <mutex>
 
 namespace photon::lexer {
 
@@ -46,7 +48,6 @@ enum class CharClass : u8 {
     Whitespace,
     Letter,
     Digit,
-    HexDigit,
     Quote,
     SingleQuote,
     Slash,
@@ -104,12 +105,7 @@ constexpr std::array<CharClass, 256> CHAR_CLASS_TABLE = []() {
     
     // Digits
     for (unsigned char c = '0'; c <= '9'; ++c) table[c] = CharClass::Digit;
-    
-    // Hex digits (already covered by letters and digits, but marked specifically)
-    for (unsigned char c = 'a'; c <= 'f'; ++c) table[c] = CharClass::HexDigit;
-    for (unsigned char c = 'A'; c <= 'F'; ++c) table[c] = CharClass::HexDigit;
-    for (unsigned char c = '0'; c <= '9'; ++c) table[c] = CharClass::HexDigit;
-    
+
     // Special characters
     table['"'] = CharClass::Quote;
     table['\''] = CharClass::SingleQuote;
@@ -152,28 +148,61 @@ constexpr auto get_char_class(char c) -> CharClass {
 }
 
 /**
+ * @brief Check if character is an ASCII decimal digit
+ * @param c Character to classify
+ * @return True for '0' through '9'
+ * @complexity O(1)
+ */
+constexpr auto is_ascii_digit(char c) -> bool {
+    return c >= '0' && c <= '9';
+}
+
+/**
  * @brief Check if character is valid for identifier continuation
+ * @param c Character to classify
+ * @return True for ASCII alphanumerics and underscore
+ * @complexity O(1)
  */
 constexpr auto is_identifier_char(char c) -> bool {
-    return std::isalnum(c) || c == '_';
+    return is_ascii_digit(c) ||
+           (c >= 'a' && c <= 'z') ||
+           (c >= 'A' && c <= 'Z') ||
+           c == '_';
 }
 
 /**
  * @brief Check if character is valid hex digit
+ * @param c Character to classify
+ * @return True for '0'-'9', 'a'-'f' and 'A'-'F'
+ * @complexity O(1)
  */
 constexpr auto is_hex_digit(char c) -> bool {
-    return std::isdigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    return is_ascii_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
 /**
- * @brief Parse escape sequence
+ * @brief Check if character is a valid digit for the given radix
+ * @param c Character to classify
+ * @param base Numeric radix (2, 8, 10 or 16)
+ * @return True if the character is a digit in that radix
+ * @complexity O(1)
  */
-auto parse_escape_sequence(StringView& input, usize& pos) -> Result<char, LexicalError> {
-    if (pos >= input.size()) {
-        return Result<char, LexicalError>(LexicalError::UnexpectedEof);
+constexpr auto is_digit_for_base(char c, int base) -> bool {
+    switch (base) {
+        case 2: return c == '0' || c == '1';
+        case 8: return c >= '0' && c <= '7';
+        case 16: return is_hex_digit(c);
+        default: return is_ascii_digit(c);
     }
-    
-    char c = input[pos++];
+}
+
+/**
+ * @brief Translate an escape sequence body character to the value it denotes
+ * @param c Character following the backslash
+ * @return Escaped character, or InvalidEscape if the sequence is not recognised
+ * @complexity O(1)
+ */
+auto translate_escape(char c) -> Result<char, LexicalError> {
     switch (c) {
         case 'n': return Result<char, LexicalError>('\n');
         case 't': return Result<char, LexicalError>('\t');
@@ -229,17 +258,21 @@ private:
     memory::MemoryArena<>& arena_;
     LexerOptions options_;
     
-    // Current tokenization state
+    /**
+     * @brief Serializes tokenization so concurrent callers cannot corrupt the shared scan state
+     */
+    mutable std::mutex mutex_;
+
     StringView input_;
     usize position_;
     usize line_;
     usize column_;
-    String filename_;
-    
-    // Statistics
+    usize token_start_;
+    StringView filename_;
+
     Statistics stats_;
     std::chrono::high_resolution_clock::time_point start_time_;
-    
+
 public:
     explicit Impl(source::SourceManager& source_manager,
                   memory::MemoryArena<>& arena,
@@ -249,41 +282,67 @@ public:
         , options_(options)
         , position_(0)
         , line_(1)
-        , column_(1) {}
+        , column_(1)
+        , token_start_(0) {}
     
     auto tokenize(source::FileID source_id) -> Result<TokenStream, LexicalError> {
+        std::lock_guard<std::mutex> guard(mutex_);
+
         const auto* source_file = source_manager_.get_file(source_id);
         if (!source_file) {
-            return Result<TokenStream, LexicalError>(LexicalError::InvalidCharacter);
+            return Result<TokenStream, LexicalError>(LexicalError::InvalidSourceFile);
         }
-        
+
         input_ = source_file->content();
-        filename_ = String(source_file->filename());
+        filename_ = intern_filename(source_file->filename());
         return tokenize_internal();
     }
-    
+
     auto tokenize(StringView content, StringView filename) -> Result<TokenStream, LexicalError> {
+        std::lock_guard<std::mutex> guard(mutex_);
+
         input_ = content;
-        filename_ = String(filename);
+        filename_ = intern_filename(filename);
         return tokenize_internal();
     }
-    
+
     auto get_statistics() const noexcept -> Statistics {
+        std::lock_guard<std::mutex> guard(mutex_);
         return stats_;
     }
-    
+
     auto reset_statistics() noexcept -> void {
+        std::lock_guard<std::mutex> guard(mutex_);
         stats_ = Statistics{};
     }
     
 private:
+    /**
+     * @brief Copies a filename into the arena so tokens can hold a stable view of it
+     * @param filename Filename supplied by the caller or source manager
+     * @return View of the arena-owned copy, valid until the arena is reset
+     *
+     * @post Returned view is independent of the caller's buffer lifetime
+     * @complexity O(n) in the length of the filename
+     */
+    auto intern_filename(StringView filename) -> StringView {
+        if (filename.empty()) {
+            return {};
+        }
+
+        char* buffer = arena_.allocate<char>(filename.size());
+        std::memcpy(buffer, filename.data(), filename.size());
+        return StringView{buffer, filename.size()};
+    }
+
     auto tokenize_internal() -> Result<TokenStream, LexicalError> {
         start_time_ = std::chrono::high_resolution_clock::now();
         
         position_ = 0;
         line_ = 1;
         column_ = 1;
-        
+        token_start_ = 0;
+
         Vec<Token> tokens;
         tokens.reserve(input_.size() / 8); // Rough estimate: 1 token per 8 characters
         
@@ -299,10 +358,7 @@ private:
                 break;
             }
             
-            // Skip whitespace tokens unless preserving them
-            if (!options_.preserve_whitespace || token.type != TokenType::Invalid) {
-                tokens.push_back(std::move(token));
-            }
+            tokens.push_back(std::move(token));
         }
         
         // Add EOF token if not already present
@@ -315,34 +371,55 @@ private:
     }
     
     auto next_token() -> Result<Token, LexicalError> {
+        while (true) {
         skip_whitespace();
-        
+
         if (position_ >= input_.size()) {
             return Result<Token, LexicalError>(Token{TokenType::Eof, create_location()});
         }
-        
+
+        token_start_ = position_;
+
         usize start_line = line_;
         usize start_column = column_;
-        
+
         char c = peek();
         CharClass char_class = get_char_class(c);
-        
+
         switch (char_class) {
             case CharClass::Letter:
                 return tokenize_identifier_or_keyword();
-                
+
             case CharClass::Digit:
                 return tokenize_number();
-                
+
             case CharClass::Quote:
                 return tokenize_string();
-                
+
             case CharClass::SingleQuote:
                 return tokenize_char();
-                
-            case CharClass::Slash:
-                return tokenize_slash_or_comment();
-                
+
+            case CharClass::Newline:
+                advance();
+                return Result<Token, LexicalError>(Token{TokenType::Newline, create_location(start_line, start_column)});
+
+            case CharClass::Slash: {
+                if (position_ + 1 < input_.size() && input_[position_ + 1] == '/') {
+                    skip_line_comment();
+                    continue;
+                }
+
+                if (position_ + 1 < input_.size() && input_[position_ + 1] == '*') {
+                    auto comment_result = skip_block_comment();
+                    if (!comment_result.has_value()) {
+                        return Result<Token, LexicalError>(comment_result.error());
+                    }
+                    continue;
+                }
+
+                return tokenize_slash();
+            }
+
             case CharClass::Plus:
                 return tokenize_plus();
                 
@@ -438,8 +515,9 @@ private:
                 stats_.errors_recovered++;
                 return Result<Token, LexicalError>(LexicalError::InvalidCharacter);
         }
+        }
     }
-    
+
     auto tokenize_identifier_or_keyword() -> Result<Token, LexicalError> {
         usize start_pos = position_;
         usize start_line = line_;
@@ -468,160 +546,162 @@ private:
         return Result<Token, LexicalError>(Token{TokenType::Identifier, TokenValue{text}, location});
     }
     
+    /**
+     * @brief Consumes a run of digits in the given radix, dropping '_' separators
+     * @param base Numeric radix (2, 8, 10 or 16)
+     * @param digits Receives the separator-free digit text
+     * @return Number of significant digits consumed
+     * @complexity O(n) in the length of the digit run
+     */
+    auto scan_digits(int base, String& digits) -> usize {
+        usize count = 0;
+        while (position_ < input_.size() && (is_digit_for_base(peek(), base) || peek() == '_')) {
+            if (peek() != '_') {
+                digits += peek();
+                ++count;
+            }
+            advance();
+        }
+        return count;
+    }
+
+    /**
+     * @brief Checks that a numeric literal is not immediately followed by identifier characters
+     * @return True if the literal is correctly terminated
+     * @complexity O(1)
+     */
+    [[nodiscard]] auto number_is_terminated() const -> bool {
+        return position_ >= input_.size() || !is_identifier_char(peek());
+    }
+
     auto tokenize_number() -> Result<Token, LexicalError> {
-        usize start_pos = position_;
         usize start_line = line_;
         usize start_column = column_;
-        
-        // Check for special number prefixes
+
         if (peek() == '0' && position_ + 1 < input_.size()) {
             char second = input_[position_ + 1];
             if (second == 'x' || second == 'X') {
-                return tokenize_hex_number();
-            } else if (second == 'b' || second == 'B') {
-                return tokenize_binary_number();
-            } else if (second == 'o' || second == 'O') {
-                return tokenize_octal_number();
+                return tokenize_prefixed_number(16);
+            }
+            if (second == 'b' || second == 'B') {
+                return tokenize_prefixed_number(2);
+            }
+            if (second == 'o' || second == 'O') {
+                return tokenize_prefixed_number(8);
             }
         }
-        
-        // Regular decimal number
-        while (position_ < input_.size() && std::isdigit(peek())) {
+
+        String digits;
+        bool is_float = false;
+
+        scan_digits(10, digits);
+
+        if (position_ + 1 < input_.size() && peek() == '.' && is_ascii_digit(input_[position_ + 1])) {
+            is_float = true;
+            digits += '.';
             advance();
+            scan_digits(10, digits);
         }
-        
-        // Check for float
-        if (position_ < input_.size() && peek() == '.' && 
-            position_ + 1 < input_.size() && std::isdigit(input_[position_ + 1])) {
-            advance(); // consume '.'
-            while (position_ < input_.size() && std::isdigit(peek())) {
-                advance();
+
+        if (position_ < input_.size() && (peek() == 'e' || peek() == 'E')) {
+            usize probe = position_ + 1;
+            if (probe < input_.size() && (input_[probe] == '+' || input_[probe] == '-')) {
+                ++probe;
             }
-            
-            // Check for scientific notation
-            if (position_ < input_.size() && (peek() == 'e' || peek() == 'E')) {
+
+            if (probe < input_.size() && is_ascii_digit(input_[probe])) {
+                is_float = true;
+                digits += peek();
                 advance();
-                if (position_ < input_.size() && (peek() == '+' || peek() == '-')) {
+                if (peek() == '+' || peek() == '-') {
+                    digits += peek();
                     advance();
                 }
-                while (position_ < input_.size() && std::isdigit(peek())) {
-                    advance();
-                }
+                scan_digits(10, digits);
             }
-            
-            StringView text = input_.substr(start_pos, position_ - start_pos);
-            auto value_result = parse_float(text);
+        }
+
+        if (!number_is_terminated()) {
+            return Result<Token, LexicalError>(LexicalError::InvalidNumber);
+        }
+
+        auto location = create_location(start_line, start_column);
+
+        if (is_float) {
+            auto value_result = parse_float(digits);
             if (!value_result.has_value()) {
                 return Result<Token, LexicalError>(value_result.error());
             }
-            
             return Result<Token, LexicalError>(Token{
-                TokenType::FloatLiteral, 
-                TokenValue{value_result.value()}, 
-                create_location(start_line, start_column)
+                TokenType::FloatLiteral,
+                TokenValue{value_result.value()},
+                location
             });
         }
-        
-        StringView text = input_.substr(start_pos, position_ - start_pos);
-        auto value_result = parse_integer(text, 10);
+
+        auto value_result = parse_integer(digits, 10);
         if (!value_result.has_value()) {
             return Result<Token, LexicalError>(value_result.error());
         }
-        
+
         return Result<Token, LexicalError>(Token{
-            TokenType::IntegerLiteral, 
-            TokenValue{value_result.value()}, 
-            create_location(start_line, start_column)
+            TokenType::IntegerLiteral,
+            TokenValue{value_result.value()},
+            location
         });
     }
-    
-    auto tokenize_hex_number() -> Result<Token, LexicalError> {
-        usize start_pos = position_;
+
+    /**
+     * @brief Scans an integer literal introduced by a radix prefix (0x, 0b or 0o)
+     * @param base Numeric radix implied by the prefix
+     * @return Integer token, or InvalidNumber if no digits follow the prefix
+     * @complexity O(n) in the length of the literal
+     */
+    auto tokenize_prefixed_number(int base) -> Result<Token, LexicalError> {
         usize start_line = line_;
         usize start_column = column_;
-        
-        advance(); // consume '0'
-        advance(); // consume 'x' or 'X'
-        
-        while (position_ < input_.size() && is_hex_digit(peek())) {
-            advance();
-        }
-        
-        StringView text = input_.substr(start_pos + 2, position_ - start_pos - 2); // Skip "0x"
-        if (text.empty()) {
+
+        advance();
+        advance();
+
+        String digits;
+        if (scan_digits(base, digits) == 0) {
             return Result<Token, LexicalError>(LexicalError::InvalidNumber);
         }
-        
-        auto value_result = parse_integer(text, 16);
+
+        if (!number_is_terminated()) {
+            return Result<Token, LexicalError>(LexicalError::InvalidNumber);
+        }
+
+        auto value_result = parse_integer(digits, base);
         if (!value_result.has_value()) {
             return Result<Token, LexicalError>(value_result.error());
         }
-        
+
         return Result<Token, LexicalError>(Token{
-            TokenType::IntegerLiteral, 
-            TokenValue{value_result.value()}, 
+            TokenType::IntegerLiteral,
+            TokenValue{value_result.value()},
             create_location(start_line, start_column)
         });
     }
-    
-    auto tokenize_binary_number() -> Result<Token, LexicalError> {
-        usize start_pos = position_;
-        usize start_line = line_;
-        usize start_column = column_;
-        
-        advance(); // consume '0'
-        advance(); // consume 'b' or 'B'
-        
-        while (position_ < input_.size() && (peek() == '0' || peek() == '1')) {
-            advance();
+
+
+    /**
+     * @brief Consumes the body of an escape sequence, keeping line and column tracking correct
+     * @return Escaped character, or the reason the sequence is invalid
+     * @pre The introducing backslash has already been consumed
+     * @complexity O(1)
+     */
+    auto read_escape_sequence() -> Result<char, LexicalError> {
+        if (position_ >= input_.size()) {
+            return Result<char, LexicalError>(LexicalError::UnexpectedEof);
         }
-        
-        StringView text = input_.substr(start_pos + 2, position_ - start_pos - 2); // Skip "0b"
-        if (text.empty()) {
-            return Result<Token, LexicalError>(LexicalError::InvalidNumber);
-        }
-        
-        auto value_result = parse_integer(text, 2);
-        if (!value_result.has_value()) {
-            return Result<Token, LexicalError>(value_result.error());
-        }
-        
-        return Result<Token, LexicalError>(Token{
-            TokenType::IntegerLiteral, 
-            TokenValue{value_result.value()}, 
-            create_location(start_line, start_column)
-        });
+
+        char c = peek();
+        advance();
+        return translate_escape(c);
     }
-    
-    auto tokenize_octal_number() -> Result<Token, LexicalError> {
-        usize start_pos = position_;
-        usize start_line = line_;
-        usize start_column = column_;
-        
-        advance(); // consume '0'
-        advance(); // consume 'o' or 'O'
-        
-        while (position_ < input_.size() && peek() >= '0' && peek() <= '7') {
-            advance();
-        }
-        
-        StringView text = input_.substr(start_pos + 2, position_ - start_pos - 2); // Skip "0o"
-        if (text.empty()) {
-            return Result<Token, LexicalError>(LexicalError::InvalidNumber);
-        }
-        
-        auto value_result = parse_integer(text, 8);
-        if (!value_result.has_value()) {
-            return Result<Token, LexicalError>(value_result.error());
-        }
-        
-        return Result<Token, LexicalError>(Token{
-            TokenType::IntegerLiteral, 
-            TokenValue{value_result.value()}, 
-            create_location(start_line, start_column)
-        });
-    }
-    
+
     auto tokenize_string() -> Result<Token, LexicalError> {
         usize start_line = line_;
         usize start_column = column_;
@@ -634,7 +714,7 @@ private:
         while (position_ < input_.size() && peek() != '"') {
             if (peek() == '\\') {
                 advance(); // consume backslash
-                auto escape_result = parse_escape_sequence(input_, position_);
+                auto escape_result = read_escape_sequence();
                 if (!escape_result.has_value()) {
                     return Result<Token, LexicalError>(escape_result.error());
                 }
@@ -676,7 +756,7 @@ private:
         char c;
         if (peek() == '\\') {
             advance(); // consume backslash
-            auto escape_result = parse_escape_sequence(input_, position_);
+            auto escape_result = read_escape_sequence();
             if (!escape_result.has_value()) {
                 return Result<Token, LexicalError>(escape_result.error());
             }
@@ -704,45 +784,51 @@ private:
         });
     }
     
-    auto tokenize_slash_or_comment() -> Result<Token, LexicalError> {
+    /**
+     * @brief Consumes a line comment up to but not including the terminating newline
+     * @complexity O(n) in the length of the comment
+     */
+    auto skip_line_comment() -> void {
+        advance();
+        advance();
+        while (position_ < input_.size() && peek() != '\n') {
+            advance();
+        }
+    }
+
+    /**
+     * @brief Consumes a block comment including its closing delimiter
+     * @return Success, or UnexpectedEof if the comment is never closed
+     * @complexity O(n) in the length of the comment
+     */
+    auto skip_block_comment() -> Result<std::monostate, LexicalError> {
+        advance();
+        advance();
+
+        while (position_ + 1 < input_.size()) {
+            if (peek() == '*' && input_[position_ + 1] == '/') {
+                advance();
+                advance();
+                return Result<std::monostate, LexicalError>(std::monostate{});
+            }
+            advance();
+        }
+
+        position_ = input_.size();
+        return Result<std::monostate, LexicalError>(LexicalError::UnexpectedEof);
+    }
+
+    auto tokenize_slash() -> Result<Token, LexicalError> {
         usize start_line = line_;
         usize start_column = column_;
-        
+
         advance(); // consume '/'
-        
-        if (position_ < input_.size()) {
-            if (peek() == '/') {
-                // Line comment
-                advance(); // consume second '/'
-                while (position_ < input_.size() && peek() != '\n') {
-                    advance();
-                }
-                // Skip the comment and continue tokenizing
-                return next_token();
-            } else if (peek() == '*') {
-                // Block comment
-                advance(); // consume '*'
-                bool found_end = false;
-                while (position_ + 1 < input_.size()) {
-                    if (peek() == '*' && input_[position_ + 1] == '/') {
-                        advance(); // consume '*'
-                        advance(); // consume '/'
-                        found_end = true;
-                        break;
-                    }
-                    advance();
-                }
-                if (!found_end) {
-                    return Result<Token, LexicalError>(LexicalError::UnterminatedString);
-                }
-                // Skip the comment and continue tokenizing
-                return next_token();
-            } else if (peek() == '=') {
-                advance(); // consume '='
-                return Result<Token, LexicalError>(Token{TokenType::SlashAssign, create_location(start_line, start_column)});
-            }
+
+        if (position_ < input_.size() && peek() == '=') {
+            advance(); // consume '='
+            return Result<Token, LexicalError>(Token{TokenType::SlashAssign, create_location(start_line, start_column)});
         }
-        
+
         return Result<Token, LexicalError>(Token{TokenType::Slash, create_location(start_line, start_column)});
     }
     
@@ -1020,18 +1106,28 @@ private:
         return diagnostics::SourceLocation{filename_, static_cast<u32>(line_), static_cast<u32>(column_), static_cast<u32>(position_)};
     }
     
+    /**
+     * @brief Builds a location for a token that started at the current token boundary
+     * @param line Line on which the token starts (1-based)
+     * @param column Column on which the token starts (1-based)
+     * @return Location whose byte offset is the token's first byte
+     * @complexity O(1)
+     */
     auto create_location(usize line, usize column) const -> diagnostics::SourceLocation {
-        return diagnostics::SourceLocation{filename_, static_cast<u32>(line), static_cast<u32>(column), static_cast<u32>(position_)};
+        return diagnostics::SourceLocation{filename_, static_cast<u32>(line), static_cast<u32>(column), static_cast<u32>(token_start_)};
     }
     
     auto update_statistics(usize token_count) -> void {
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time_);
-        
+        auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time_);
+        auto elapsed_ns = duration.count();
+
         stats_.tokens_produced = token_count;
         stats_.bytes_processed = input_.size();
         stats_.lines_processed = line_;
-        stats_.tokens_per_second = static_cast<f64>(token_count) / (static_cast<f64>(duration.count()) / 1000000.0);
+        stats_.tokens_per_second = elapsed_ns > 0
+            ? static_cast<f64>(token_count) * 1000000000.0 / static_cast<f64>(elapsed_ns)
+            : 0.0;
         stats_.memory_used = arena_.total_allocated();
     }
 };

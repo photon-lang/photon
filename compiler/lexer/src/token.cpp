@@ -108,10 +108,18 @@ constexpr std::array<StringView, 300> TOKEN_TYPE_NAMES = {{
     "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "", "", "", "", "", "", "", "", "",
     "->", "=>", "?", ".", "..", "...", "..=", "::", "", "", "", "", "", "", "", "", "", "", "", "",
     "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
-    "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
     "(", ")", "{", "}", "[", "]", "", "", "", "",
     ",", ";", ":", "@", "#", "$", "", "", "", ""
 }};
+
+static_assert(TOKEN_TYPE_NAMES[static_cast<usize>(TokenType::LeftParen)] == "(",
+              "TOKEN_TYPE_NAMES must stay aligned with the TokenType enumeration");
+static_assert(TOKEN_TYPE_NAMES[static_cast<usize>(TokenType::Dollar)] == "$",
+              "TOKEN_TYPE_NAMES must stay aligned with the TokenType enumeration");
+static_assert(TOKEN_TYPE_NAMES[static_cast<usize>(TokenType::Identifier)] == "Identifier",
+              "TOKEN_TYPE_NAMES must stay aligned with the TokenType enumeration");
+static_assert(TOKEN_TYPE_NAMES[static_cast<usize>(TokenType::RightShiftAssign)] == ">>=",
+              "TOKEN_TYPE_NAMES must stay aligned with the TokenType enumeration");
 
 
 } // anonymous namespace

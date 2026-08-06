@@ -219,6 +219,14 @@ private:
      * @brief Source location tracking
      */
     [[nodiscard]] auto current_location() const noexcept -> diagnostics::SourceLocation;
+
+    /**
+     * @brief Line of the most recently consumed token
+     * @return Line number, or 0 when no token has been consumed yet
+     *
+     * Used to detect statements that are not separated by a newline or semicolon.
+     */
+    [[nodiscard]] auto previous_token_line() const noexcept -> u32;
     [[nodiscard]] auto make_range(const diagnostics::SourceLocation& start) const noexcept -> SourceRange;
 };
 

@@ -21,33 +21,40 @@ namespace photon::source {
 
 // SourceFile implementation
 
-SourceFile::SourceFile(FileID file_id, String filename, String content, 
+SourceFile::SourceFile(FileID file_id, String filename, String content,
                        memory::MemoryArena<>& /*arena*/)
     : file_id_(file_id)
     , filename_(std::move(filename))
     , content_(std::move(content))
-    , is_memory_mapped_(false)
-    , mapped_memory_(nullptr)
-    , mapped_size_(0) {
-    
+    , is_memory_mapped_(false) {
+
+    has_byte_order_mark_ = strip_byte_order_mark();
     build_line_offsets();
     compute_statistics();
 }
 
-SourceFile::SourceFile(FileID file_id, String filename, 
+SourceFile::SourceFile(FileID file_id, String filename,
                        std::unique_ptr<u8[]> mapped_data, usize size,
                        memory::MemoryArena<>& /*arena*/)
     : file_id_(file_id)
     , filename_(std::move(filename))
-    , is_memory_mapped_(true)
-    , mapped_memory_(std::move(mapped_data))
-    , mapped_size_(size) {
-    
-    // Create string view from mapped memory
-    content_ = String(reinterpret_cast<const char*>(mapped_memory_.get()), size);
-    
+    , content_(reinterpret_cast<const char*>(mapped_data.get()), size)
+    , is_memory_mapped_(true) {
+
+    has_byte_order_mark_ = strip_byte_order_mark();
     build_line_offsets();
     compute_statistics();
+}
+
+auto SourceFile::strip_byte_order_mark() -> bool {
+    constexpr StringView bom = "\xEF\xBB\xBF";
+
+    if (content_.size() >= bom.size() && content_.compare(0, bom.size(), bom) == 0) {
+        content_.erase(0, bom.size());
+        return true;
+    }
+
+    return false;
 }
 
 auto SourceFile::offset_to_line_column(usize offset) const 
@@ -78,21 +85,23 @@ auto SourceFile::line_column_to_offset(u32 line, u32 column) const
     }
     
     usize line_start = line_offsets_[line - 1];
-    
-    // Calculate line end
+
     usize line_end;
     if (line < line_offsets_.size()) {
-        line_end = line_offsets_[line] - 1; // -1 to exclude newline
+        line_end = line_offsets_[line];
+        while (line_end > line_start &&
+               (content_[line_end - 1] == '\n' || content_[line_end - 1] == '\r')) {
+            --line_end;
+        }
     } else {
         line_end = content_.size();
     }
-    
-    // Check if column is valid for this line
+
     usize line_length = line_end - line_start;
     if (column == 0 || column > line_length + 1) {
         return Result<usize, SourceError>(SourceError::InvalidEncoding);
     }
-    
+
     return Result<usize, SourceError>(line_start + column - 1);
 }
 
@@ -146,38 +155,65 @@ auto SourceFile::get_line_range(u32 start_line, u32 end_line) const
 auto SourceFile::validate_utf8() const noexcept -> bool {
     const u8* data = reinterpret_cast<const u8*>(content_.data());
     usize size = content_.size();
-    
+
+    auto is_continuation = [](u8 byte) noexcept -> bool {
+        return (byte & 0xC0) == 0x80;
+    };
+
     for (usize i = 0; i < size; ) {
-        u8 byte = data[i];
-        
-        if (byte < 0x80) {
-            // ASCII character
+        u8 lead = data[i];
+
+        if (lead < 0x80) {
             ++i;
-        } else if ((byte & 0xE0) == 0xC0) {
-            // 2-byte sequence
-            if (i + 1 >= size || (data[i + 1] & 0xC0) != 0x80) {
+            continue;
+        }
+
+        if (lead >= 0xC2 && lead <= 0xDF) {
+            if (i + 1 >= size || !is_continuation(data[i + 1])) {
                 return false;
             }
             i += 2;
-        } else if ((byte & 0xF0) == 0xE0) {
-            // 3-byte sequence
-            if (i + 2 >= size || (data[i + 1] & 0xC0) != 0x80 || 
-                (data[i + 2] & 0xC0) != 0x80) {
-                return false;
-            }
-            i += 3;
-        } else if ((byte & 0xF8) == 0xF0) {
-            // 4-byte sequence
-            if (i + 3 >= size || (data[i + 1] & 0xC0) != 0x80 || 
-                (data[i + 2] & 0xC0) != 0x80 || (data[i + 3] & 0xC0) != 0x80) {
-                return false;
-            }
-            i += 4;
-        } else {
-            return false;
+            continue;
         }
+
+        if (lead >= 0xE0 && lead <= 0xEF) {
+            if (i + 2 >= size || !is_continuation(data[i + 1]) || !is_continuation(data[i + 2])) {
+                return false;
+            }
+
+            u8 second = data[i + 1];
+            if (lead == 0xE0 && second < 0xA0) {
+                return false; // overlong
+            }
+            if (lead == 0xED && second >= 0xA0) {
+                return false; // UTF-16 surrogate half
+            }
+
+            i += 3;
+            continue;
+        }
+
+        if (lead >= 0xF0 && lead <= 0xF4) {
+            if (i + 3 >= size || !is_continuation(data[i + 1]) ||
+                !is_continuation(data[i + 2]) || !is_continuation(data[i + 3])) {
+                return false;
+            }
+
+            u8 second = data[i + 1];
+            if (lead == 0xF0 && second < 0x90) {
+                return false; // overlong
+            }
+            if (lead == 0xF4 && second >= 0x90) {
+                return false; // above U+10FFFF
+            }
+
+            i += 4;
+            continue;
+        }
+
+        return false;
     }
-    
+
     return true;
 }
 
@@ -265,13 +301,10 @@ auto SourceFile::compute_statistics() -> void {
 }
 
 auto SourceFile::detect_encoding() -> Encoding {
-    if (content_.size() >= 3 && 
-        static_cast<u8>(content_[0]) == 0xEF &&
-        static_cast<u8>(content_[1]) == 0xBB &&
-        static_cast<u8>(content_[2]) == 0xBF) {
+    if (has_byte_order_mark_) {
         return Encoding::Utf8WithBom;
     }
-    
+
     // Check if content is pure ASCII
     bool is_ascii = true;
     for (char c : content_) {
@@ -379,11 +412,11 @@ auto FilesystemResolver::load_file(StringView path) const
     
     String content(static_cast<usize>(size), '\0');
     file.read(content.data(), size);
-    
-    if (file.fail() && !file.eof()) {
+
+    if (file.gcount() != size) {
         return Result<String, SourceError>(SourceError::AccessDenied);
     }
-    
+
     return Result<String, SourceError>(std::move(content));
 }
 
@@ -514,17 +547,15 @@ auto SourceManager::load_file(StringView filename)
         }
         
         String content = content_result.value();
-        
-        // Validate UTF-8 if requested
-        if (options_.validate_utf8) {
-            // UTF-8 validation would go here if needed
-            (void)content; // Suppress unused variable warning
-        }
-        
+
         source_file = std::make_unique<SourceFile>(
             file_id, resolved_path, std::move(content), arena_);
     }
-    
+
+    if (options_.validate_utf8 && !source_file->validate_utf8()) {
+        return Result<FileID, SourceError>(SourceError::InvalidUtf8);
+    }
+
     // Update statistics
     total_bytes_loaded_ += source_file->statistics().byte_count;
     total_files_loaded_++;
@@ -552,10 +583,15 @@ auto SourceManager::load_from_string(StringView filename, String content)
     }
     
     FileID file_id = next_file_id_++;
-    
+
     auto source_file = std::make_unique<SourceFile>(
         file_id, String(filename), std::move(content), arena_);
-    
+
+    if (options_.validate_utf8 && !source_file->validate_utf8()) {
+        --next_file_id_;
+        return Result<FileID, SourceError>(SourceError::InvalidUtf8);
+    }
+
     // Update statistics
     total_bytes_loaded_ += source_file->statistics().byte_count;
     total_files_loaded_++;
@@ -617,7 +653,8 @@ auto SourceManager::create_location(StringView filename, u32 line, u32 column) c
     }
     
     usize offset = offset_result.value();
-    return Result<diagnostics::SourceLocation, SourceError>(diagnostics::SourceLocation(filename, line, column, static_cast<u32>(offset)));
+    return Result<diagnostics::SourceLocation, SourceError>(
+        diagnostics::SourceLocation(file->filename(), line, column, static_cast<u32>(offset)));
 }
 
 auto SourceManager::resolve_location(const diagnostics::SourceLocation& location) const
@@ -641,10 +678,15 @@ auto SourceManager::get_content_at(const diagnostics::SourceLocation& location,
     }
     
     usize offset = location.offset();
-    if (offset + length > file->content().size()) {
-        length = file->content().size() - offset;
+    if (offset > file->content().size()) {
+        return Result<StringView, SourceError>(SourceError::InvalidEncoding);
     }
-    
+
+    usize available = file->content().size() - offset;
+    if (length > available) {
+        length = available;
+    }
+
     return Result<StringView, SourceError>(StringView(file->content().data() + offset, length));
 }
 
@@ -661,12 +703,12 @@ auto SourceManager::get_line_content(const diagnostics::SourceLocation& location
 
 auto SourceManager::get_loaded_files() const -> Vec<String> {
     Vec<String> filenames;
-    filenames.reserve(filename_to_id_.size());
-    
-    for (const auto& [filename, file_id] : filename_to_id_) {
-        filenames.push_back(filename);
+    filenames.reserve(files_.size());
+
+    for (const auto& [file_id, file] : files_) {
+        filenames.push_back(String(file->filename()));
     }
-    
+
     return filenames;
 }
 

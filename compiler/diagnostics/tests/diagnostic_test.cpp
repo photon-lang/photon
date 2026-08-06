@@ -8,7 +8,11 @@
 #include "photon/diagnostics/diagnostic.hpp"
 #include "photon/diagnostics/diagnostic_engine.hpp"
 #include <gtest/gtest.h>
+#include <atomic>
+#include <thread>
+#include <vector>
 
+using namespace photon;
 using namespace photon::diagnostics;
 using namespace photon::memory;
 
@@ -16,17 +20,14 @@ namespace {
 
 class DiagnosticTest : public ::testing::Test {
 protected:
-    void SetUp() override {
-        arena_ = std::make_unique<MemoryArena<>>();
-        location_ = SourceLocation("test.pht", 10, 5, 100);
-        message_ = DiagnosticMessage(
-            DiagnosticLevel::Error,
-            DiagnosticCode::SyntaxUnexpectedToken,
-            "unexpected token",
-            location_
-        );
-    }
-    
+    DiagnosticTest()
+        : arena_(std::make_unique<MemoryArena<>>())
+        , location_("test.pht", 10, 5, 100)
+        , message_(DiagnosticLevel::Error,
+                   DiagnosticCode::SyntaxUnexpectedToken,
+                   "unexpected token",
+                   location_) {}
+
     std::unique_ptr<MemoryArena<>> arena_;
     SourceLocation location_;
     DiagnosticMessage message_;

@@ -77,7 +77,6 @@ docs/html/
 docs/latex/
 
 # AI assistance files (keep private)
-CLAUDE.md
 .claude_settings
 
 # Temporary files

@@ -8,34 +8,32 @@
 #include "photon/diagnostics/formatter.hpp"
 #include <gtest/gtest.h>
 #include <sstream>
+#include <fstream>
+#include <cstdio>
 
+using namespace photon;
 using namespace photon::diagnostics;
 
 namespace {
 
 class FormatterTest : public ::testing::Test {
 protected:
+    FormatterTest()
+        : location_("test.pht", 10, 5, 100)
+        , error_message_(DiagnosticLevel::Error,
+                         DiagnosticCode::SyntaxUnexpectedToken,
+                         "unexpected token ';'",
+                         location_)
+        , warning_message_(DiagnosticLevel::Warning,
+                           DiagnosticCode::SyntaxUnexpectedToken,
+                           "unused variable 'x'",
+                           location_)
+        , note_message_(DiagnosticLevel::Note,
+                        DiagnosticCode(0),
+                        "consider using '_' prefix for unused variables",
+                        location_) {}
+
     void SetUp() override {
-        location_ = SourceLocation("test.pht", 10, 5, 100);
-        error_message_ = DiagnosticMessage(
-            DiagnosticLevel::Error,
-            DiagnosticCode::SyntaxUnexpectedToken,
-            "unexpected token ';'",
-            location_
-        );
-        warning_message_ = DiagnosticMessage(
-            DiagnosticLevel::Warning,
-            DiagnosticCode::SyntaxUnexpectedToken,
-            "unused variable 'x'",
-            location_
-        );
-        note_message_ = DiagnosticMessage(
-            DiagnosticLevel::Note,
-            DiagnosticCode(0),
-            "consider using '_' prefix for unused variables",
-            location_
-        );
-        
         // Disable colors for consistent testing
         ColorFormatter::set_color_enabled(false);
     }

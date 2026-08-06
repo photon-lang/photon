@@ -66,6 +66,20 @@ auto BoolLiteral::to_string() const -> String {
     return value_ ? "true" : "false";
 }
 
+// === CharLiteral ===
+
+auto CharLiteral::accept(ASTVisitor& visitor) -> void {
+    visitor.visit_char_literal(*this);
+}
+
+auto CharLiteral::accept(ASTVisitor& visitor) const -> void {
+    visitor.visit_char_literal(*this);
+}
+
+auto CharLiteral::to_string() const -> String {
+    return "'" + String(value_) + "'";
+}
+
 // === Identifier ===
 
 auto Identifier::accept(ASTVisitor& visitor) -> void {
@@ -118,6 +132,16 @@ auto BinaryExpr::to_string() const -> String {
         case Operator::Assign: oss << "="; break;
         case Operator::Range: oss << ".."; break;
         case Operator::RangeInclusive: oss << "..="; break;
+        case Operator::AddAssign: oss << "+="; break;
+        case Operator::SubAssign: oss << "-="; break;
+        case Operator::MulAssign: oss << "*="; break;
+        case Operator::DivAssign: oss << "/="; break;
+        case Operator::ModAssign: oss << "%="; break;
+        case Operator::BitwiseAndAssign: oss << "&="; break;
+        case Operator::BitwiseOrAssign: oss << "|="; break;
+        case Operator::BitwiseXorAssign: oss << "^="; break;
+        case Operator::LeftShiftAssign: oss << "<<="; break;
+        case Operator::RightShiftAssign: oss << ">>="; break;
     }
     
     oss << " " << right_->to_string() << ")";
@@ -172,6 +196,20 @@ auto CallExpr::to_string() const -> String {
     
     oss << ")";
     return oss.str();
+}
+
+// === ExprStmt ===
+
+auto ExprStmt::accept(ASTVisitor& visitor) -> void {
+    visitor.visit_expr_stmt(*this);
+}
+
+auto ExprStmt::accept(ASTVisitor& visitor) const -> void {
+    visitor.visit_expr_stmt(*this);
+}
+
+auto ExprStmt::to_string() const -> String {
+    return expression_->to_string();
 }
 
 // === Block ===
@@ -243,16 +281,22 @@ auto FunctionDecl::to_string() const -> String {
     
     for (usize i = 0; i < parameters_.size(); ++i) {
         if (i > 0) oss << ", ";
-        oss << parameters_[i].name << ": " << parameters_[i].type->to_string();
+        oss << parameters_[i].name;
+        if (parameters_[i].type) {
+            oss << ": " << parameters_[i].type->to_string();
+        }
     }
-    
+
     oss << ")";
-    
+
     if (return_type_) {
         oss << " -> " << return_type_->to_string();
     }
-    
-    oss << " " << body_->to_string();
+
+    if (body_) {
+        oss << " " << body_->to_string();
+    }
+
     return oss.str();
 }
 

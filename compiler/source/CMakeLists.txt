@@ -27,6 +27,6 @@ if(PHOTON_ENABLE_TESTING)
 endif()
 
 # Benchmarks
-if(PHOTON_ENABLE_BENCHMARKS)
+if(PHOTON_ENABLE_BENCHMARKS AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/CMakeLists.txt)
     add_subdirectory(benchmarks)
 endif()

@@ -11,19 +11,19 @@
 namespace photon::diagnostics {
 
 auto DiagnosticEngine::report(Diagnostic diagnostic) -> bool {
-    // Check if we should stop accepting diagnostics
-    if (should_stop_compilation()) {
+    const bool is_error = diagnostic.is_error();
+    const bool is_fatal = diagnostic.is_fatal();
+
+    std::lock_guard<std::mutex> guard(mutex_);
+
+    if (is_error && error_limit_reached()) {
         return false;
     }
-    
-    // Update counters
+
     update_counters(diagnostic);
-    
-    // Store diagnostic in arena-allocated memory
     diagnostics_.push_back(std::move(diagnostic));
-    
-    // Check if this diagnostic should stop compilation
-    return !should_stop_compilation();
+
+    return !is_fatal;
 }
 
 auto DiagnosticEngine::report(DiagnosticLevel level, DiagnosticCode code,
@@ -34,15 +34,16 @@ auto DiagnosticEngine::report(DiagnosticLevel level, DiagnosticCode code,
 }
 
 auto DiagnosticEngine::fatal(DiagnosticCode code, String message, SourceLocation location) -> bool {
-    fatal_encountered_.store(true, std::memory_order_relaxed);
     report(DiagnosticLevel::Fatal, code, std::move(message), location);
     return false; // Fatal errors always return false to stop compilation
 }
 
 auto DiagnosticEngine::filtered_diagnostics(const FilterPredicate& filter) const -> Vec<Diagnostic> {
+    std::lock_guard<std::mutex> guard(mutex_);
+
     Vec<Diagnostic> filtered;
     filtered.reserve(diagnostics_.size() / 2); // Rough estimate
-    
+
     for (const auto& diagnostic : diagnostics_) {
         if (filter(diagnostic)) {
             filtered.push_back(diagnostic);
@@ -65,17 +66,37 @@ auto DiagnosticEngine::diagnostics_by_code(DiagnosticCode code) const -> Vec<Dia
 }
 
 auto DiagnosticEngine::clear() noexcept -> void {
+    std::lock_guard<std::mutex> guard(mutex_);
+
     diagnostics_.clear();
-    arena_.reset();
-    
+
     error_count_.store(0, std::memory_order_relaxed);
     warning_count_.store(0, std::memory_order_relaxed);
     note_count_.store(0, std::memory_order_relaxed);
     fatal_encountered_.store(false, std::memory_order_relaxed);
 }
 
+auto DiagnosticEngine::memory_usage() const noexcept -> usize {
+    std::lock_guard<std::mutex> guard(mutex_);
+
+    usize message_bytes = 0;
+    for (const auto& diagnostic : diagnostics_) {
+        message_bytes += diagnostic.primary().message().capacity();
+        for (const auto& note : diagnostic.notes()) {
+            message_bytes += note.message().capacity();
+        }
+        message_bytes += diagnostic.notes().capacity() * sizeof(DiagnosticMessage);
+    }
+
+    return arena_.bytes_used()
+         + diagnostics_.capacity() * sizeof(Diagnostic)
+         + message_bytes;
+}
+
 auto DiagnosticEngine::sort_by_location() -> void {
-    std::sort(diagnostics_.begin(), diagnostics_.end(),
+    std::lock_guard<std::mutex> guard(mutex_);
+
+    std::stable_sort(diagnostics_.begin(), diagnostics_.end(),
               [](const Diagnostic& a, const Diagnostic& b) {
                   const auto& loc_a = a.primary().location();
                   const auto& loc_b = b.primary().location();
@@ -96,7 +117,9 @@ auto DiagnosticEngine::sort_by_location() -> void {
 }
 
 auto DiagnosticEngine::sort_by_severity() -> void {
-    std::sort(diagnostics_.begin(), diagnostics_.end(),
+    std::lock_guard<std::mutex> guard(mutex_);
+
+    std::stable_sort(diagnostics_.begin(), diagnostics_.end(),
               [](const Diagnostic& a, const Diagnostic& b) {
                   // Fatal > Error > Warning > Note
                   auto level_priority = [](DiagnosticLevel level) -> int {

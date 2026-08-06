@@ -16,6 +16,7 @@
 #include "photon/common/types.hpp"
 #include <functional>
 #include <atomic>
+#include <mutex>
 
 namespace photon::diagnostics {
 
@@ -64,10 +65,15 @@ public:
     /**
      * @brief Reports a diagnostic to the engine
      * @param diagnostic Diagnostic to report
-     * @return True if diagnostic was accepted, false if limits exceeded
-     * 
-     * @post Diagnostic is stored in arena memory
-     * @post Counters are updated appropriately
+     * @return True if the diagnostic was accepted and compilation may continue;
+     *         false if it was rejected because the error limit is already
+     *         reached, or if it is fatal
+     *
+     * @post An accepted diagnostic is stored and the counters are updated
+     * @note The error limit only rejects further errors; warnings and notes are
+     *       always accepted so that context is not lost once the limit is hit
+     *
+     * @thread_safety Safe to call concurrently
      */
     auto report(Diagnostic diagnostic) -> bool;
 
@@ -128,6 +134,7 @@ public:
      * @return Total diagnostic count
      */
     [[nodiscard]] auto total_count() const noexcept -> usize {
+        std::lock_guard<std::mutex> guard(mutex_);
         return diagnostics_.size();
     }
 
@@ -190,6 +197,11 @@ public:
     /**
      * @brief Gets all diagnostics
      * @return Vector of all diagnostics
+     *
+     * @warning Returns a reference to the live container. Unlike the other
+     *          accessors this cannot be synchronised, so it must not be called
+     *          while another thread may still be reporting; use
+     *          filtered_diagnostics() for a synchronised snapshot.
      */
     [[nodiscard]] auto diagnostics() const noexcept -> const Vec<Diagnostic>& {
         return diagnostics_;
@@ -219,7 +231,8 @@ public:
     /**
      * @brief Clears all diagnostics and resets counters
      * @post All diagnostic counts are zero
-     * @post Arena memory is reset
+     * @note The arena is owned by the caller and shared with other components,
+     *       so it is deliberately left untouched
      */
     auto clear() noexcept -> void;
 
@@ -241,11 +254,12 @@ public:
 
     /**
      * @brief Gets memory usage statistics
-     * @return Bytes used for diagnostic storage
+     * @return Bytes currently held for diagnostic storage, including the arena
+     *         bytes consumed so far, the diagnostic vector's capacity and the
+     *         message text of every stored diagnostic
+     * @complexity O(n) in the number of stored diagnostics
      */
-    [[nodiscard]] auto memory_usage() const noexcept -> usize {
-        return arena_.bytes_used();
-    }
+    [[nodiscard]] auto memory_usage() const noexcept -> usize;
 
     /**
      * @brief Sorts diagnostics by source location
@@ -261,6 +275,7 @@ public:
 
 private:
     memory::MemoryArena<>& arena_;
+    mutable std::mutex mutex_;
     Vec<Diagnostic> diagnostics_;
     usize max_errors_;
     
@@ -328,18 +343,30 @@ public:
 
     /**
      * @brief Finalizes and reports the diagnostic
-     * @return True if diagnostic was accepted by engine
+     * @return True if the diagnostic was accepted by the engine, false if it
+     *         was rejected or if this builder has already emitted
+     * @post The builder is marked as emitted and will not emit again
      */
     auto emit() -> bool {
+        if (emitted_) {
+            return false;
+        }
+
+        emitted_ = true;
         return engine_.report(std::move(diagnostic_));
     }
 
     /**
      * @brief Destructor automatically emits if not already emitted
+     * @throws Nothing - a failure to report is swallowed so the destructor
+     *         cannot terminate the process
      */
     ~DiagnosticBuilder() {
         if (!emitted_) {
-            emit();
+            try {
+                emit();
+            } catch (...) {
+            }
         }
     }
 

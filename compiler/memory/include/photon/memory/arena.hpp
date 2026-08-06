@@ -171,18 +171,40 @@ private:
     usize block_count_;
 
     auto allocate_new_block() -> void;
-    auto align_pointer(void* ptr, usize alignment) noexcept -> void*;
-    static auto align_size(usize size, usize alignment) noexcept -> usize;
+    static auto align_pointer(void* ptr, usize alignment) noexcept -> void*;
+
+    /**
+     * @brief Releases a block chain without recursing
+     * @param head Head of the chain to release
+     *
+     * The blocks are linked by owning pointers, so letting the head's
+     * destructor run would recurse once per block and overflow the stack on
+     * long chains.
+     *
+     * @complexity O(n) in the number of blocks, O(1) stack
+     */
+    static auto destroy_chain(Ptr<Block> head) noexcept -> void;
 };
+
+/**
+ * @brief Largest object size and alignment an arena will ever hand out
+ */
+inline constexpr usize max_arena_object_size = 65536;
 
 /**
  * @concept ArenaAllocatable
  * @brief Concept for types that can be allocated in an arena
+ *
+ * Arena memory is reclaimed wholesale by reset() or destruction and no
+ * destructor is ever run, so only trivially destructible types may be
+ * allocated; anything else would silently leak the resources it owns.
+ * Over-aligned types are permitted because allocate() honours any power-of-two
+ * alignment up to the block size.
  */
 template<typename T>
-concept ArenaAllocatable = std::is_destructible_v<T> && 
-                          (sizeof(T) <= 65536) &&
-                          (alignof(T) <= alignof(std::max_align_t));
+concept ArenaAllocatable = std::is_trivially_destructible_v<T> &&
+                          (sizeof(T) <= max_arena_object_size) &&
+                          (alignof(T) <= max_arena_object_size);
 
 } // namespace photon::memory
 

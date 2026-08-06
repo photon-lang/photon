@@ -22,7 +22,8 @@ protected:
     }
     
     auto parse_with_errors(const std::string& source, bool enable_recovery = true) -> std::unique_ptr<Parser> {
-        auto file_id_result = source_mgr->load_from_string("test.ph", source);
+        auto file_id_result = source_mgr->load_from_string(
+            "test" + std::to_string(++parse_counter) + ".ph", source);
         if (!file_id_result) {
             return nullptr;
         }
@@ -50,6 +51,7 @@ protected:
 
     std::unique_ptr<MemoryArena<>> arena;
     std::unique_ptr<SourceManager> source_mgr;
+    int parse_counter = 0;
 };
 
 // === Basic Error Detection ===
@@ -263,7 +265,7 @@ TEST_F(ErrorRecoveryTest, NestedBlockErrors) {
         fn outer() {
             let x = 42
             {
-                let y = incomplete
+                let y =
                 {
                     let z = 100
                 }

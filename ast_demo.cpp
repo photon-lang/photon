@@ -121,8 +121,12 @@ public:
     void visit_float_literal(const FloatLiteral&) override {}
     void visit_string_literal(StringLiteral&) override {}
     void visit_string_literal(const StringLiteral&) override {}
+    void visit_char_literal(CharLiteral&) override {}
+    void visit_char_literal(const CharLiteral&) override {}
     void visit_bool_literal(BoolLiteral&) override {}
     void visit_bool_literal(const BoolLiteral&) override {}
+    void visit_expr_stmt(ExprStmt&) override {}
+    void visit_expr_stmt(const ExprStmt&) override {}
     void visit_identifier(Identifier&) override {}
     void visit_identifier(const Identifier&) override {}
     void visit_unary_expr(UnaryExpr&) override {}

@@ -270,6 +270,28 @@ public:
 };
 
 /**
+ * @brief Character literal expression
+ */
+class CharLiteral : public Expression {
+private:
+    StringView value_;
+
+public:
+    explicit CharLiteral(StringView value, SourceRange source_range = {})
+        : Expression(Kind::CharLiteral, source_range), value_(value) {}
+
+    [[nodiscard]] auto value() const noexcept -> StringView { return value_; }
+
+    static auto class_of(const ASTNode* node) -> bool {
+        return node->kind() == Kind::CharLiteral;
+    }
+
+    auto accept(ASTVisitor& visitor) -> void override;
+    auto accept(ASTVisitor& visitor) const -> void override;
+    auto to_string() const -> String override;
+};
+
+/**
  * @brief Boolean literal expression
  */
 class BoolLiteral : public Expression {
@@ -327,6 +349,11 @@ public:
         LeftShift, RightShift,                  // Bitwise
         Assign,                                 // Assignment
         Range, RangeInclusive,                  // Range
+        AddAssign, SubAssign, MulAssign,        // Compound assignment
+        DivAssign, ModAssign,                   // Compound assignment
+        BitwiseAndAssign, BitwiseOrAssign,      // Compound assignment
+        BitwiseXorAssign,                       // Compound assignment
+        LeftShiftAssign, RightShiftAssign,      // Compound assignment
     };
     
 private:
@@ -443,6 +470,32 @@ public:
 };
 
 /**
+ * @brief Expression appearing in statement position
+ *
+ * Wraps an expression so that it can be stored in a statement list, for
+ * example a bare function call inside a block.
+ */
+class ExprStmt : public Statement {
+private:
+    ASTPtr<Expression> expression_;
+
+public:
+    explicit ExprStmt(ASTPtr<Expression> expression, SourceRange source_range = {})
+        : Statement(Kind::ExprStmt, source_range), expression_(std::move(expression)) {}
+
+    [[nodiscard]] auto expression() const noexcept -> const Expression& { return *expression_; }
+    [[nodiscard]] auto expression_mut() noexcept -> Expression& { return *expression_; }
+
+    static auto class_of(const ASTNode* node) -> bool {
+        return node->kind() == Kind::ExprStmt;
+    }
+
+    auto accept(ASTVisitor& visitor) -> void override;
+    auto accept(ASTVisitor& visitor) const -> void override;
+    auto to_string() const -> String override;
+};
+
+/**
  * @brief Variable declaration statement
  */
 class VarDecl : public Statement {
@@ -553,6 +606,8 @@ public:
     virtual auto visit_float_literal(const FloatLiteral& node) -> void = 0;
     virtual auto visit_string_literal(StringLiteral& node) -> void = 0;
     virtual auto visit_string_literal(const StringLiteral& node) -> void = 0;
+    virtual auto visit_char_literal(CharLiteral& node) -> void = 0;
+    virtual auto visit_char_literal(const CharLiteral& node) -> void = 0;
     virtual auto visit_bool_literal(BoolLiteral& node) -> void = 0;
     virtual auto visit_bool_literal(const BoolLiteral& node) -> void = 0;
     virtual auto visit_identifier(Identifier& node) -> void = 0;
@@ -565,6 +620,8 @@ public:
     virtual auto visit_call_expr(const CallExpr& node) -> void = 0;
     
     // Statements
+    virtual auto visit_expr_stmt(ExprStmt& node) -> void = 0;
+    virtual auto visit_expr_stmt(const ExprStmt& node) -> void = 0;
     virtual auto visit_block(Block& node) -> void = 0;
     virtual auto visit_block(const Block& node) -> void = 0;
     virtual auto visit_var_decl(VarDecl& node) -> void = 0;

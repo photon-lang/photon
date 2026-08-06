@@ -29,7 +29,7 @@ MemoryArena<BlockSize, Alignment>::MemoryArena() noexcept
 
 template<usize BlockSize, usize Alignment>
 MemoryArena<BlockSize, Alignment>::~MemoryArena() noexcept {
-    // Unique_ptr handles cleanup automatically through the chain
+    destroy_chain(std::move(first_block_));
 }
 
 template<usize BlockSize, usize Alignment>
@@ -53,9 +53,8 @@ MemoryArena<BlockSize, Alignment>::MemoryArena(MemoryArena&& other) noexcept
 template<usize BlockSize, usize Alignment>
 auto MemoryArena<BlockSize, Alignment>::operator=(MemoryArena&& other) noexcept -> MemoryArena& {
     if (this != &other) {
-        // Release current resources
-        first_block_.reset();
-        
+        destroy_chain(std::move(first_block_));
+
         // Move from other
         first_block_ = std::move(other.first_block_);
         current_block_ = other.current_block_;
@@ -86,10 +85,18 @@ auto MemoryArena<BlockSize, Alignment>::allocate(usize size, usize alignment) ->
         throw std::invalid_argument("Allocation size exceeds block size");
     }
     
-    if ((alignment & (alignment - 1)) != 0) {
-        throw std::invalid_argument("Alignment must be power of 2");
+    if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
+        throw std::invalid_argument("Alignment must be a non-zero power of 2");
     }
-    
+
+    if (alignment > BlockSize) {
+        throw std::invalid_argument("Alignment exceeds block size");
+    }
+
+    if (size + alignment - Alignment > BlockSize && alignment > Alignment) {
+        throw std::invalid_argument("Allocation cannot fit in a block at the requested alignment");
+    }
+
     // Ensure we have a current block
     if (!current_block_) {
         allocate_new_block();
@@ -163,9 +170,8 @@ auto MemoryArena<BlockSize, Alignment>::reset() noexcept -> void {
         return;
     }
     
-    // Keep the first block, deallocate the rest
-    first_block_->next.reset();
-    
+    destroy_chain(std::move(first_block_->next));
+
     // Reset to beginning of first block
     current_block_ = first_block_.get();
     current_pos_ = current_block_->data;
@@ -242,8 +248,11 @@ auto MemoryArena<BlockSize, Alignment>::align_pointer(void* ptr, usize alignment
 }
 
 template<usize BlockSize, usize Alignment>
-auto MemoryArena<BlockSize, Alignment>::align_size(usize size, usize alignment) noexcept -> usize {
-    return (size + alignment - 1) & ~(alignment - 1);
+auto MemoryArena<BlockSize, Alignment>::destroy_chain(Ptr<Block> head) noexcept -> void {
+    while (head) {
+        auto next = std::move(head->next);
+        head = std::move(next);
+    }
 }
 
 } // namespace photon::memory
